@@ -7,10 +7,12 @@
 
   let state = {
     loaded: false,
-    authMode: 'login', // 'login' ou 'signup'
+    authMode: 'login', // 'login', 'signup' ou 'recuperar'
     authError: '',
     authConfirmMsg: '',
     authSending: false,
+    recuperandoSenha: false, // true quando o usuário chegou aqui via link de recuperação de senha
+    novaSenhaError: '',
     session: null,
     currentUserEmail: '',
     theme: localStorage.getItem('app_theme') || 'dark',
@@ -330,12 +332,20 @@
     garantirRealtime();
     render();
 
-    window.db.onAuthStateChange(async (session) => {
+    window.db.onAuthStateChange(async (session, event) => {
+      if(event === 'PASSWORD_RECOVERY'){
+        // Usuário clicou no link do e-mail: mostra a tela de "definir nova senha"
+        // em vez de deixá-lo entrar direto no app com essa sessão temporária.
+        state.session = session;
+        state.recuperandoSenha = true;
+        render();
+        return;
+      }
       const tinhaSessao = !!state.session;
       state.session = session;
-      if(session){
+      if(session && !state.recuperandoSenha){
         await bootstrapSessao();
-      } else if(tinhaSessao) {
+      } else if(tinhaSessao && !state.recuperandoSenha) {
         limparSessao();
       }
       render();
@@ -399,6 +409,56 @@
       state.authConfirmMsg = 'Cadastro realizado! Verifique seu e-mail para confirmar a conta antes de entrar.';
     }
     render();
+  }
+
+  // Envia o e-mail com o link de recuperação de senha.
+  async function doRecuperarSenha(email){
+    if(!isValidEmail(email)){ state.authError = 'Informe um e-mail válido.'; render(); return; }
+
+    state.authError = '';
+    state.authConfirmMsg = '';
+    state.authSending = true;
+    render();
+
+    const { error } = await window.db.resetPasswordForEmail(email.trim().toLowerCase());
+
+    state.authSending = false;
+    if(error){
+      state.authError = error.message;
+      render();
+      return;
+    }
+
+    state.authMode = 'login';
+    state.authConfirmMsg = 'Se esse e-mail estiver cadastrado, enviamos um link para redefinir a senha. Confira sua caixa de entrada.';
+    render();
+  }
+
+  // Define a nova senha após o usuário clicar no link recebido por e-mail.
+  async function doDefinirNovaSenha(novaSenha, confirmarSenha){
+    state.novaSenhaError = '';
+
+    if(!novaSenha || novaSenha.length < 6){ state.novaSenhaError = 'A senha deve ter ao menos 6 caracteres.'; render(); return; }
+    if(novaSenha !== confirmarSenha){ state.novaSenhaError = 'As senhas não coincidem.'; render(); return; }
+
+    state.authSending = true;
+    render();
+
+    const { error } = await window.db.updatePassword(novaSenha);
+
+    state.authSending = false;
+    if(error){
+      state.novaSenhaError = error.message;
+      render();
+      return;
+    }
+
+    // Senha trocada com sucesso: a sessão temporária do link já vira a sessão
+    // válida, então entramos direto no app como se tivesse acabado de logar.
+    state.recuperandoSenha = false;
+    await bootstrapSessao();
+    render();
+    showToast('Senha atualizada com sucesso!');
   }
 
   // Encerra a sessão do usuário e volta para a tela de identificação.
@@ -494,7 +554,7 @@
     const blob = new Blob([buffer], { type: 'application/octet-stream' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `Minhas_Solicitacoes_${state.currentUserEmail}_${new Date().toISOString().slice(0,10)}.xlsx`;
+    link.download = `Minhas_Solicitacoes_${esc(state.currentUserEmail)}_${new Date().toISOString().slice(0,10)}.xlsx`;
     link.click();
     URL.revokeObjectURL(link.href);
     showToast('Relatório Excel exportado!');
@@ -639,6 +699,11 @@
     app.innerHTML = '';
     if(!state.loaded) return;
 
+    if(state.recuperandoSenha){
+      renderDefinirNovaSenhaModal();
+      return;
+    }
+
     if(!state.session){
       renderLoginModal();
       return;
@@ -691,7 +756,7 @@
         <div class="user-info-tag">
           <div class="user-avatar">${initial}</div>
           <div>
-            <div>Sessão ativa: <strong>${state.currentUserEmail}</strong></div>
+            <div>Sessão ativa: <strong>${esc(state.currentUserEmail)}</strong></div>
             <div class="dim" style="font-size:11.5px;">Sincronizado em tempo real com o controle de estoque.</div>
           </div>
         </div>
@@ -824,6 +889,8 @@
 
   // Cria a tela de login/cadastro com e-mail e senha (autenticação real via Supabase Auth).
   function renderLoginModal(){
+    if(state.authMode === 'recuperar'){ renderRecuperarSenhaModal(); return; }
+
     const isSignup = state.authMode === 'signup';
     const modal = elFrag(`
       <div class="login-overlay">
@@ -840,6 +907,7 @@
             <label>Senha <span style="color:var(--amber);">*</span></label>
             <input id="login-senha" type="password" placeholder="${isSignup ? 'Mínimo 6 caracteres' : 'Sua senha'}">
           </div>
+          ${!isSignup ? `<div style="text-align:right; margin-top:6px;"><span id="link-esqueci-senha" style="color:var(--steel); cursor:pointer; text-decoration:underline; font-size:12px;">Esqueci minha senha</span></div>` : ''}
           ${state.authConfirmMsg ? `<div style="color:var(--ok); font-size:12.5px; margin-top:12px;">${state.authConfirmMsg}</div>` : ''}
           ${state.authError ? `<div style="color:var(--danger); font-size:12.5px; margin-top:12px;">${state.authError}</div>` : ''}
           <button class="primary" id="login-btn" style="margin-top:16px;" ${state.authSending ? 'disabled' : ''}>
@@ -871,7 +939,91 @@
       state.authConfirmMsg = '';
       render();
     };
+
+    const linkEsqueci = modal.querySelector('#link-esqueci-senha');
+    if(linkEsqueci) linkEsqueci.onclick = () => {
+      state.authMode = 'recuperar';
+      state.authError = '';
+      state.authConfirmMsg = '';
+      render();
+    };
   }
+
+  // Tela para o usuário pedir o e-mail de recuperação de senha.
+  function renderRecuperarSenhaModal(){
+    const modal = elFrag(`
+      <div class="login-overlay">
+        <div class="login-card">
+          <h2>Recuperar Senha</h2>
+          <p class="dim" style="font-size:13.5px; margin:0 0 20px; line-height:1.4;">
+            Informe o e-mail da sua conta. Vamos enviar um link para você definir uma nova senha.
+          </p>
+          <div class="field">
+            <label>Seu E-mail Corporativo <span style="color:var(--amber);">*</span></label>
+            <input id="recuperar-email" type="email" placeholder="nome@empresa.com" autofocus>
+          </div>
+          ${state.authError ? `<div style="color:var(--danger); font-size:12.5px; margin-top:12px;">${state.authError}</div>` : ''}
+          <button class="primary" id="recuperar-btn" style="margin-top:16px;" ${state.authSending ? 'disabled' : ''}>
+            ${state.authSending ? 'Enviando...' : 'Enviar link de recuperação'}
+          </button>
+          <div style="text-align:center; margin-top:14px; font-size:12.5px;">
+            <span id="voltar-login" style="color:var(--steel); cursor:pointer; text-decoration:underline;">← Voltar para o login</span>
+          </div>
+        </div>
+      </div>
+    `);
+
+    app.appendChild(modal);
+
+    const emailInput = modal.querySelector('#recuperar-email');
+    const btn = modal.querySelector('#recuperar-btn');
+    const doSubmit = () => doRecuperarSenha(emailInput.value);
+    btn.onclick = doSubmit;
+    emailInput.onkeydown = (e) => { if(e.key === 'Enter') doSubmit(); };
+
+    modal.querySelector('#voltar-login').onclick = () => {
+      state.authMode = 'login';
+      state.authError = '';
+      render();
+    };
+  }
+
+  // Tela para definir a nova senha, exibida quando o usuário chega via link do e-mail.
+  function renderDefinirNovaSenhaModal(){
+    const modal = elFrag(`
+      <div class="login-overlay">
+        <div class="login-card">
+          <h2>Definir Nova Senha</h2>
+          <p class="dim" style="font-size:13.5px; margin:0 0 20px; line-height:1.4;">
+            Escolha uma nova senha para sua conta.
+          </p>
+          <div class="field">
+            <label>Nova Senha <span style="color:var(--amber);">*</span></label>
+            <input id="nova-senha" type="password" placeholder="Mínimo 6 caracteres" autofocus>
+          </div>
+          <div class="field" style="margin-top:12px;">
+            <label>Confirmar Nova Senha <span style="color:var(--amber);">*</span></label>
+            <input id="confirmar-senha" type="password" placeholder="Repita a nova senha">
+          </div>
+          ${state.novaSenhaError ? `<div style="color:var(--danger); font-size:12.5px; margin-top:12px;">${state.novaSenhaError}</div>` : ''}
+          <button class="primary" id="definir-senha-btn" style="margin-top:16px;" ${state.authSending ? 'disabled' : ''}>
+            ${state.authSending ? 'Salvando...' : 'Salvar Nova Senha'}
+          </button>
+        </div>
+      </div>
+    `);
+
+    app.appendChild(modal);
+
+    const novaSenhaInput = modal.querySelector('#nova-senha');
+    const confirmarInput = modal.querySelector('#confirmar-senha');
+    const btn = modal.querySelector('#definir-senha-btn');
+    const doSubmit = () => doDefinirNovaSenha(novaSenhaInput.value, confirmarInput.value);
+    btn.onclick = doSubmit;
+    novaSenhaInput.onkeydown = (e) => { if(e.key === 'Enter') confirmarInput.focus(); };
+    confirmarInput.onkeydown = (e) => { if(e.key === 'Enter') doSubmit(); };
+  }
+
 
   // Constrói o painel de nova requisição e seus campos de preenchimento.
   function buildFormPanel(){
@@ -885,26 +1037,26 @@
         <div class="field-row-3">
           <div class="field">
             <label>Nome Completo <span class="req">*</span></label>
-            <input id="p-nome" value="${p.nome}" placeholder="Seu nome completo">
+            <input id="p-nome" value="${esc(p.nome)}" placeholder="Seu nome completo">
           </div>
           <div class="field">
             <label>Matrícula / ID</label>
-            <input id="p-matricula" value="${p.matricula}" placeholder="Ex: M-10293">
+            <input id="p-matricula" value="${esc(p.matricula)}" placeholder="Ex: M-10293">
           </div>
           <div class="field">
             <label>E-mail (Chave da Conta)</label>
-            <input value="${state.currentUserEmail}" readonly style="opacity:0.7; cursor:not-allowed;">
+            <input value="${esc(state.currentUserEmail)}" readonly style="opacity:0.7; cursor:not-allowed;">
           </div>
         </div>
 
         <div class="field-row">
           <div class="field">
             <label>Departamento / Setor</label>
-            <input id="p-setor" value="${p.setor}" placeholder="Ex: Operações / RH">
+            <input id="p-setor" value="${esc(p.setor)}" placeholder="Ex: Operações / RH">
           </div>
           <div class="field">
             <label>Centro de Custo</label>
-            <input id="p-centro" value="${p.centroCusto}" placeholder="Ex: CC-3040">
+            <input id="p-centro" value="${esc(p.centroCusto)}" placeholder="Ex: CC-3040">
           </div>
         </div>
 
@@ -918,7 +1070,7 @@
 
         <div class="field">
           <label>Selecione os Itens do Catálogo — informe a quantidade de cada um</label>
-          <input id="busca-item" placeholder="Filtrar item por nome ou SKU..." value="${state.busca}" style="margin-bottom:12px;">
+          <input id="busca-item" placeholder="Filtrar item por nome ou SKU..." value="${esc(state.busca)}" style="margin-bottom:12px;">
           <div class="product-grid" id="product-grid"></div>
           <span id="toggle-outro" style="color:var(--steel); font-size:12px; cursor:pointer; text-decoration:underline;">
             ${f.usarLivre ? '← Voltar ao catálogo padronizado' : 'Item não listado? Descrever produto personalizado →'}
@@ -930,7 +1082,7 @@
             <div class="field-row" style="margin-top:12px;">
               <div class="field" style="flex:2;">
                 <label>Descrição do Item Especial <span class="req">*</span></label>
-                <input id="f-item-livre" value="${f.itemLivre}" placeholder="Informe especificações técnicas, modelo ou marca desejada">
+                <input id="f-item-livre" value="${esc(f.itemLivre)}" placeholder="Informe especificações técnicas, modelo ou marca desejada">
               </div>
               <div class="field">
                 <label>Quantidade <span class="req">*</span></label>
@@ -957,42 +1109,42 @@
         <div class="field-row-3">
           <div class="field">
             <label>CEP <span class="req">*</span></label>
-            <input id="f-cep" value="${f.endereco.cep}" placeholder="00000-000" maxlength="9" inputmode="numeric">
+            <input id="f-cep" value="${esc(f.endereco.cep)}" placeholder="00000-000" maxlength="9" inputmode="numeric">
           </div>
           <div class="field" style="grid-column: span 2;">
             <label>Logradouro <span class="req">*</span></label>
-            <input id="f-logradouro" value="${f.endereco.logradouro}" placeholder="${f.buscandoCep ? 'Buscando endereço...' : 'Rua, Avenida...'}" ${f.buscandoCep ? 'disabled' : ''}>
+            <input id="f-logradouro" value="${esc(f.endereco.logradouro)}" placeholder="${f.buscandoCep ? 'Buscando endereço...' : 'Rua, Avenida...'}" ${f.buscandoCep ? 'disabled' : ''}>
           </div>
         </div>
         ${f.erroCep ? `<div style="color:var(--danger); font-size:12.5px; margin:-8px 0 12px;">${f.erroCep}</div>` : ''}
         <div class="field-row-3">
           <div class="field">
             <label>Número <span class="req">*</span></label>
-            <input id="f-numero" value="${f.endereco.numero}" placeholder="Nº">
+            <input id="f-numero" value="${esc(f.endereco.numero)}" placeholder="Nº">
           </div>
           <div class="field">
             <label>Complemento</label>
-            <input id="f-complemento" value="${f.endereco.complemento}" placeholder="Bloco, apto, sala...">
+            <input id="f-complemento" value="${esc(f.endereco.complemento)}" placeholder="Bloco, apto, sala...">
           </div>
           <div class="field">
             <label>Bairro</label>
-            <input id="f-bairro" value="${f.endereco.bairro}" placeholder="Bairro">
+            <input id="f-bairro" value="${esc(f.endereco.bairro)}" placeholder="Bairro">
           </div>
         </div>
         <div class="field-row">
           <div class="field">
             <label>Cidade <span class="req">*</span></label>
-            <input id="f-cidade" value="${f.endereco.cidade}" placeholder="Cidade">
+            <input id="f-cidade" value="${esc(f.endereco.cidade)}" placeholder="Cidade">
           </div>
           <div class="field">
             <label>UF <span class="req">*</span></label>
-            <input id="f-uf" value="${f.endereco.uf}" placeholder="UF" maxlength="2" style="text-transform:uppercase;">
+            <input id="f-uf" value="${esc(f.endereco.uf)}" placeholder="UF" maxlength="2" style="text-transform:uppercase;">
           </div>
         </div>
 
         <div class="field" style="margin-top:8px;">
           <label>Observações</label>
-          <textarea id="f-motivo" rows="2" placeholder="Alguma observação adicional sobre o pedido (opcional)...">${f.motivo}</textarea>
+          <textarea id="f-motivo" rows="2" placeholder="Alguma observação adicional sobre o pedido (opcional)...">${esc(f.motivo)}</textarea>
         </div>
 
         <div id="form-error-box" style="color:var(--danger); font-size:13px; margin-bottom:12px;">${state.error}</div>
@@ -1018,7 +1170,7 @@
     return elFrag(`
       <div class="panel" id="history-panel-box">
         <div class="panel-head">
-          <h3>Meus Pedidos (${state.currentUserEmail})</h3>
+          <h3>Meus Pedidos (${esc(state.currentUserEmail)})</h3>
           <button class="secondary" id="btn-export">📥 Exportar Meus Pedidos (CSV)</button>
         </div>
 
@@ -1040,11 +1192,11 @@
                 <tbody>
                   ${list.map(s => `
                     <tr>
-                      <td style="font-weight:600;">${s.item}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${s.endereco}</small>` : ''}</td>
+                      <td style="font-weight:600;">${esc(s.item)}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
                       <td class="mono" style="font-weight:700;">${s.quantidade}</td>
-                      <td class="dim">${s.setor || '—'}<br><small class="mono">${s.centroCusto || ''}</small></td>
-                      <td><span class="badge urg-${s.urgencia}">${s.urgencia.toUpperCase()}</span></td>
-                      <td><span class="badge ${s.status}">${s.status.toUpperCase()}</span></td>
+                      <td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td>
+                      <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
+                      <td><span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span></td>
                       <td class="dim mono" style="font-size:11px;">${fmtDate(s.dataCriacao)}</td>
                       <td>
                         ${s.status === 'pendente' ? `<button class="danger-btn cancel-req-btn" data-id="${s.id}">Cancelar</button>` : `<span class="dim" style="font-size:11.5px;">—</span>`}
@@ -1063,6 +1215,16 @@
   // Converte uma string HTML em um elemento DOM pronto para ser inserido na página.
   function elFrag(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstElementChild; }
 
+  // Escapa texto antes de inserir no HTML. Todo campo digitado pelo usuário
+  // (nome, motivo, endereço, item personalizado...) DEVE passar por aqui antes
+  // de entrar em um template de innerHTML — caso contrário, alguém poderia
+  // digitar <script> ou <img onerror=...> e executar código na tela de quem for
+  // ler esse conteúdo depois (XSS armazenado).
+  function esc(v){
+    if(v === null || v === undefined) return '';
+    return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
   // Atualiza somente a grade de produtos, preservando o restante da tela.
   function renderGridOnly(){
     const grid = document.getElementById('product-grid');
@@ -1078,9 +1240,9 @@
       const qtd = isSelected ? state.form.itens[p.id] : 1;
       return `
         <div class="product-card ${isSelected ? 'selected' : ''}" data-id="${p.id}">
-          <div class="cat">${p.categoria || ''}</div>
-          <h4>${p.nome}</h4>
-          <div class="dim mono" style="font-size:11px; margin-top:4px;">SKU: ${p.sku || '—'} | Estoque: <strong style="color:${estVal > 5 ? 'var(--text)' : 'var(--danger)'};">${estVal}</strong></div>
+          <div class="cat">${esc(p.categoria)}</div>
+          <h4>${esc(p.nome)}</h4>
+          <div class="dim mono" style="font-size:11px; margin-top:4px;">SKU: ${p.sku ? esc(p.sku) : '—'} | Estoque: <strong style="color:${estVal > 5 ? 'var(--text)' : 'var(--danger)'};">${estVal}</strong></div>
           ${isSelected ? `
             <div class="field" style="margin-top:10px;" onclick="event.stopPropagation();">
               <label style="margin-bottom:4px;">Quantidade deste item</label>
@@ -1140,11 +1302,11 @@
           <tbody>
             ${list.map(s => `
               <tr>
-                <td style="font-weight:600;">${s.item}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${s.endereco}</small>` : ''}</td>
+                <td style="font-weight:600;">${esc(s.item)}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
                 <td class="mono" style="font-weight:700;">${s.quantidade}</td>
-                <td class="dim">${s.setor || '—'}<br><small class="mono">${s.centroCusto || ''}</small></td>
-                <td><span class="badge urg-${s.urgencia}">${s.urgencia.toUpperCase()}</span></td>
-                <td><span class="badge ${s.status}">${s.status.toUpperCase()}</span></td>
+                <td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td>
+                <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
+                <td><span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span></td>
                 <td class="dim mono" style="font-size:11px;">${fmtDate(s.dataCriacao)}</td>
                 <td>
                   ${s.status === 'pendente' ? `<button class="danger-btn cancel-req-btn" data-id="${s.id}">Cancelar</button>` : `<span class="dim" style="font-size:11.5px;">—</span>`}

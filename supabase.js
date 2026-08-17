@@ -22,7 +22,10 @@ const db = {
   },
 
   onAuthStateChange(callback) {
-    return supabaseClient.auth.onAuthStateChange((_event, session) => callback(session));
+    // Repassa também o "event" (ex: 'PASSWORD_RECOVERY', 'SIGNED_IN') — o app
+    // precisa saber quando o motivo da mudança de sessão foi um clique no
+    // link de recuperação de senha, para mostrar a tela certa.
+    return supabaseClient.auth.onAuthStateChange((event, session) => callback(session, event));
   },
 
   async signUp(email, senha) {
@@ -38,6 +41,20 @@ const db = {
 
   async signIn(email, senha) {
     return await supabaseClient.auth.signInWithPassword({ email, password: senha });
+  },
+
+  // Envia o e-mail de "esqueci minha senha". O link dentro do e-mail traz um
+  // token que, ao ser aberto, dispara o evento PASSWORD_RECOVERY no app.
+  async resetPasswordForEmail(email) {
+    return await supabaseClient.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + window.location.pathname
+    });
+  },
+
+  // Define a nova senha. Só funciona dentro da sessão temporária criada pelo
+  // link de recuperação (ou por um usuário já logado trocando a própria senha).
+  async updatePassword(novaSenha) {
+    return await supabaseClient.auth.updateUser({ password: novaSenha });
   },
 
   async signOut() {
