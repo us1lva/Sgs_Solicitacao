@@ -26,7 +26,14 @@ const db = {
   },
 
   async signUp(email, senha) {
-    return await supabaseClient.auth.signUp({ email, password: senha });
+    // emailRedirectTo garante que, ao confirmar o e-mail, a pessoa volte para
+    // ESTE app (e não para o "Site URL" padrão configurado no Supabase, que
+    // pode ser o domínio de outro sistema, como o backoffice).
+    return await supabaseClient.auth.signUp({
+      email,
+      password: senha,
+      options: { emailRedirectTo: window.location.origin + window.location.pathname }
+    });
   },
 
   async signIn(email, senha) {
@@ -128,22 +135,29 @@ const db = {
       quantidade: row.quantidade,
       urgencia: row.urgencia,
       motivo: row.motivo,
+      endereco: row.endereco,
       status: row.status,
       dataCriacao: row.data_criacao,
-      produtoIds: itens.filter(i => i.solicitacao_id === row.id).map(i => i.produto_id)
+      // Itens do catálogo com a quantidade individual de cada um (não mais um valor único).
+      itens: itens.filter(i => i.solicitacao_id === row.id).map(i => ({ produtoId: i.produto_id, quantidade: i.quantidade }))
     }));
   },
 
   // Cria a solicitação inteira (registro + itens + baixa de estoque) numa única
   // transação no banco, via função RPC "criar_solicitacao". Evita condição de
   // corrida e impede que o cliente manipule estoque diretamente.
-  async criarSolicitacao({ produtoIds, item, quantidade, urgencia, motivo }) {
+  //
+  // itens: [{ produtoId, quantidade }, ...] — cada item do catálogo com sua própria quantidade.
+  // Para item fora do catálogo, deixe itens=[] e preencha itemCustomizado + quantidadeCustomizada.
+  async criarSolicitacao({ itens, itemCustomizado, quantidadeCustomizada, urgencia, motivo, endereco }) {
+    const itensPayload = (itens || []).map(i => ({ produto_id: i.produtoId, quantidade: i.quantidade }));
     return await supabaseClient.rpc('criar_solicitacao', {
-      p_produto_ids: produtoIds && produtoIds.length ? produtoIds : null,
-      p_item: item,
-      p_quantidade: quantidade,
+      p_itens: itensPayload,
+      p_item_customizado: itemCustomizado || null,
+      p_quantidade_customizado: quantidadeCustomizada || null,
       p_urgencia: urgencia,
-      p_motivo: motivo
+      p_motivo: motivo,
+      p_endereco: endereco
     });
   },
 

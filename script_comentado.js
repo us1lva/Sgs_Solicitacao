@@ -17,7 +17,13 @@
     userProfile: { nome: '', matricula: '', setor: '', centroCusto: '' },
     solicitacoes: [],
     produtos: [],
-    form: { produtoIds: [], itemLivre: '', usarLivre: false, quantidade: 1, urgencia: 'normal', motivo: '' },
+    form: {
+      itens: {},          // { produtoId: quantidade } — quantidade individual por item selecionado
+      itemLivre: '', usarLivre: false, quantidadeLivre: 1,
+      urgencia: 'normal', motivo: '',
+      endereco: { cep: '', logradouro: '', bairro: '', cidade: '', uf: '', numero: '', complemento: '' },
+      buscandoCep: false, erroCep: ''
+    },
     busca: '',
     error: '',
     sending: false,
@@ -202,6 +208,60 @@
   // Exibe uma mensagem temporária de aviso na interface.
   function showToast(msg){ state.toast=msg; render(); setTimeout(()=>{state.toast=null; render();}, 4000); }
 
+  // Junta os campos do endereço num único texto legível para salvar no pedido.
+  function montarEnderecoTexto(e){
+    const partes = [];
+    let linha1 = e.logradouro || '';
+    if(e.numero) linha1 += (linha1 ? ', ' : '') + e.numero;
+    if(linha1) partes.push(linha1);
+    if(e.complemento) partes.push(e.complemento);
+    if(e.bairro) partes.push(e.bairro);
+    const cidadeUf = [e.cidade, e.uf].filter(Boolean).join('/');
+    if(cidadeUf) partes.push(cidadeUf);
+    if(e.cep) partes.push('CEP ' + e.cep);
+    return partes.join(' - ');
+  }
+
+  // Verifica se há o mínimo de informação para considerar o endereço preenchido.
+  function enderecoValido(e){
+    return !!(e.cep && e.logradouro && e.numero && e.cidade && e.uf);
+  }
+
+  // Consulta o ViaCEP e preenche automaticamente logradouro/bairro/cidade/UF.
+  async function buscarCep(cepDigitado){
+    const cep = (cepDigitado || '').replace(/\D/g, '');
+    state.form.endereco.cep = cep;
+    state.erroCep = '';
+
+    if(cep.length !== 8){
+      state.erroCep = cep.length > 0 ? 'CEP deve ter 8 dígitos.' : '';
+      render();
+      return;
+    }
+
+    state.buscandoCep = true;
+    render();
+
+    try {
+      const resp = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+      const data = await resp.json();
+      if(data.erro){
+        state.erroCep = 'CEP não encontrado.';
+      } else {
+        state.form.endereco.logradouro = data.logradouro || '';
+        state.form.endereco.bairro = data.bairro || '';
+        state.form.endereco.cidade = data.localidade || '';
+        state.form.endereco.uf = data.uf || '';
+        state.form.endereco.cep = (data.cep || cep).replace(/\D/g, '').replace(/(\d{5})(\d{3})/, '$1-$2');
+      }
+    } catch (err) {
+      state.erroCep = 'Não foi possível consultar o CEP agora. Preencha manualmente.';
+    } finally {
+      state.buscandoCep = false;
+      render();
+    }
+  }
+
   // ==========================================================================
   // Sessão / dados: tudo o que antes vinha do localStorage agora vem do Supabase.
   // ==========================================================================
@@ -235,7 +295,12 @@
     state.usuarioId = null;
     state.userProfile = { nome: '', matricula: '', setor: '', centroCusto: '' };
     state.solicitacoes = [];
-    state.form = { produtoIds: [], itemLivre: '', usarLivre: false, quantidade: 1, urgencia: 'normal', motivo: '' };
+    state.form = {
+      itens: {}, itemLivre: '', usarLivre: false, quantidadeLivre: 1,
+      urgencia: 'normal', motivo: '',
+      endereco: { cep: '', logradouro: '', bairro: '', cidade: '', uf: '', numero: '', complemento: '' },
+      buscandoCep: false, erroCep: ''
+    };
   }
 
   // Assina alterações em tempo real: estoque global e as próprias solicitações.
@@ -377,6 +442,7 @@
       { header: 'Centro Custo', key: 'centroCusto',  width: 16 },
       { header: 'Item',         key: 'item',         width: 30 },
       { header: 'Quantidade',   key: 'quantidade',   width: 12 },
+      { header: 'Endereço',     key: 'endereco',      width: 40 },
       { header: 'Urgência',     key: 'urgencia',     width: 12 },
       { header: 'Status',       key: 'status',       width: 14 },
       { header: 'Data',         key: 'dataCriacao',  width: 14 },
@@ -387,7 +453,7 @@
       const dataConvertida = s.dataCriacao ? new Date(s.dataCriacao) : null;
       sheet.addRow({
         nome: s.nome, email: s.email, matricula: s.matricula || '', setor: s.setor || '', centroCusto: s.centroCusto || '',
-        item: s.item, quantidade: s.quantidade, urgencia: s.urgencia, status: s.status,
+        item: s.item, quantidade: s.quantidade, endereco: s.endereco || '', urgencia: s.urgencia, status: s.status,
         dataCriacao: (dataConvertida && !isNaN(dataConvertida)) ? dataConvertida : s.dataCriacao,
       });
     });
@@ -490,28 +556,46 @@
 
     if(!p.nome.trim()){ state.error = 'Preencha o seu nome completo.'; render(); return; }
 
-    let produtoIds = [];
-    let itemNomeFinal = '';
+    if(!enderecoValido(f.endereco)){
+      state.error = 'Informe o endereço de entrega completo (CEP, número e cidade/UF).';
+      render();
+      return;
+    }
+
+    let itens = [];
+    let itemResumo = '';
+    let quantidadeTotal = 0;
 
     if(f.usarLivre){
       if(!f.itemLivre.trim()){ state.error = 'Especifique o item personalizado.'; render(); return; }
-      itemNomeFinal = f.itemLivre.trim();
+      if(!f.quantidadeLivre || f.quantidadeLivre < 1){ state.error = 'Informe uma quantidade válida.'; render(); return; }
+      itemResumo = f.itemLivre.trim();
+      quantidadeTotal = f.quantidadeLivre;
     } else {
-      if(!f.produtoIds || f.produtoIds.length === 0){ state.error = 'Selecione ao menos um item do catálogo.'; render(); return; }
-      produtoIds = f.produtoIds;
-      itemNomeFinal = state.produtos.filter(prod => produtoIds.includes(prod.id)).map(prod => prod.nome).join(', ');
+      const idsSelecionados = Object.keys(f.itens);
+      if(idsSelecionados.length === 0){ state.error = 'Selecione ao menos um item do catálogo.'; render(); return; }
+      for(const id of idsSelecionados){
+        if(!f.itens[id] || f.itens[id] < 1){ state.error = 'Informe uma quantidade válida para cada item selecionado.'; render(); return; }
+      }
+      itens = idsSelecionados.map(id => ({ produtoId: id, quantidade: f.itens[id] }));
+      const nomesPorId = Object.fromEntries(state.produtos.map(p2 => [p2.id, p2.nome]));
+      itemResumo = itens.map(i => `${nomesPorId[i.produtoId] || 'Item'} (x${i.quantidade})`).join(', ');
+      quantidadeTotal = itens.reduce((soma, i) => soma + i.quantidade, 0);
     }
+
+    const enderecoTexto = montarEnderecoTexto(f.endereco);
 
     state.sending = true;
     state.lastStatus = { type: 'sending', msg: 'Registrando solicitação e atualizando estoque...' };
     render();
 
     const { data: registro, error } = await window.db.criarSolicitacao({
-      produtoIds,
-      item: itemNomeFinal,
-      quantidade: f.quantidade,
+      itens,
+      itemCustomizado: f.usarLivre ? f.itemLivre.trim() : null,
+      quantidadeCustomizada: f.usarLivre ? f.quantidadeLivre : null,
       urgencia: f.urgencia,
-      motivo: f.motivo
+      motivo: f.motivo,
+      endereco: enderecoTexto
     });
 
     if(error){
@@ -529,10 +613,11 @@
     state.produtos = produtos;
     state.solicitacoes = solicitacoes;
 
-    state.form.produtoIds = [];
+    state.form.itens = {};
     state.form.itemLivre = '';
-    state.form.quantidade = 1;
+    state.form.quantidadeLivre = 1;
     state.form.motivo = '';
+    // Mantém o endereço preenchido (é comum pedir de novo pro mesmo lugar).
 
     await enviarEmailAutomatico({
       nome: p.nome,
@@ -540,10 +625,11 @@
       matricula: p.matricula,
       setor: p.setor,
       centroCusto: p.centroCusto,
-      item: itemNomeFinal,
-      quantidade: f.quantidade,
+      item: itemResumo,
+      quantidade: quantidadeTotal,
       urgencia: f.urgencia,
       motivo: f.motivo,
+      endereco: enderecoTexto,
       status: registro ? registro.status : 'pendente'
     });
   }
@@ -831,7 +917,7 @@
         </div>
 
         <div class="field">
-          <label>Selecione os Itens do Catálogo (Múltipla Escolha)</label>
+          <label>Selecione os Itens do Catálogo — informe a quantidade de cada um</label>
           <input id="busca-item" placeholder="Filtrar item por nome ou SKU..." value="${state.busca}" style="margin-bottom:12px;">
           <div class="product-grid" id="product-grid"></div>
           <span id="toggle-outro" style="color:var(--steel); font-size:12px; cursor:pointer; text-decoration:underline;">
@@ -841,31 +927,72 @@
 
         <div id="custom-item-container">
           ${f.usarLivre ? `
-            <div class="field" style="margin-top:12px;">
-              <label>Descrição do Item Especial <span class="req">*</span></label>
-              <input id="f-item-livre" value="${f.itemLivre}" placeholder="Informe especificações técnicas, modelo ou marca desejada">
+            <div class="field-row" style="margin-top:12px;">
+              <div class="field" style="flex:2;">
+                <label>Descrição do Item Especial <span class="req">*</span></label>
+                <input id="f-item-livre" value="${f.itemLivre}" placeholder="Informe especificações técnicas, modelo ou marca desejada">
+              </div>
+              <div class="field">
+                <label>Quantidade <span class="req">*</span></label>
+                <input id="f-qtd-livre" type="number" min="1" value="${f.quantidadeLivre}">
+              </div>
             </div>
           ` : ''}
         </div>
 
-        <div class="field-row" style="margin-top:16px;">
+        <div class="field" style="margin-top:16px;">
+          <label>Prioridade / Urgência</label>
+          <select id="f-urgencia">
+            <option value="baixa" ${f.urgencia==='baixa'?'selected':''}>Baixa - Rotina operacional</option>
+            <option value="normal" ${f.urgencia==='normal'?'selected':''}>Normal - Necessidade regular</option>
+            <option value="alta" ${f.urgencia==='alta'?'selected':''}>Alta - Impacto em atividades</option>
+          </select>
+        </div>
+
+        <hr style="border:none; border-top:1px solid var(--border); margin:20px 0;">
+
+        <div class="field">
+          <label>Endereço de Entrega <span class="req">*</span></label>
+        </div>
+        <div class="field-row-3">
           <div class="field">
-            <label>Quantidade por Item <span class="req">*</span></label>
-            <input id="f-qtd" type="number" min="1" value="${f.quantidade}">
+            <label>CEP <span class="req">*</span></label>
+            <input id="f-cep" value="${f.endereco.cep}" placeholder="00000-000" maxlength="9" inputmode="numeric">
+          </div>
+          <div class="field" style="grid-column: span 2;">
+            <label>Logradouro <span class="req">*</span></label>
+            <input id="f-logradouro" value="${f.endereco.logradouro}" placeholder="${f.buscandoCep ? 'Buscando endereço...' : 'Rua, Avenida...'}" ${f.buscandoCep ? 'disabled' : ''}>
+          </div>
+        </div>
+        ${f.erroCep ? `<div style="color:var(--danger); font-size:12.5px; margin:-8px 0 12px;">${f.erroCep}</div>` : ''}
+        <div class="field-row-3">
+          <div class="field">
+            <label>Número <span class="req">*</span></label>
+            <input id="f-numero" value="${f.endereco.numero}" placeholder="Nº">
           </div>
           <div class="field">
-            <label>Prioridade / Urgência</label>
-            <select id="f-urgencia">
-              <option value="baixa" ${f.urgencia==='baixa'?'selected':''}>Baixa - Rotina operacional</option>
-              <option value="normal" ${f.urgencia==='normal'?'selected':''}>Normal - Necessidade regular</option>
-              <option value="alta" ${f.urgencia==='alta'?'selected':''}>Alta - Impacto em atividades</option>
-            </select>
+            <label>Complemento</label>
+            <input id="f-complemento" value="${f.endereco.complemento}" placeholder="Bloco, apto, sala...">
+          </div>
+          <div class="field">
+            <label>Bairro</label>
+            <input id="f-bairro" value="${f.endereco.bairro}" placeholder="Bairro">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Cidade <span class="req">*</span></label>
+            <input id="f-cidade" value="${f.endereco.cidade}" placeholder="Cidade">
+          </div>
+          <div class="field">
+            <label>UF <span class="req">*</span></label>
+            <input id="f-uf" value="${f.endereco.uf}" placeholder="UF" maxlength="2" style="text-transform:uppercase;">
           </div>
         </div>
 
-        <div class="field">
-          <label>Endereço / Observações</label>
-          <textarea id="f-motivo" rows="2" placeholder="Descreva brevemente a necessidade destes produtos...">${f.motivo}</textarea>
+        <div class="field" style="margin-top:8px;">
+          <label>Observações</label>
+          <textarea id="f-motivo" rows="2" placeholder="Alguma observação adicional sobre o pedido (opcional)...">${f.motivo}</textarea>
         </div>
 
         <div id="form-error-box" style="color:var(--danger); font-size:13px; margin-bottom:12px;">${state.error}</div>
@@ -913,7 +1040,7 @@
                 <tbody>
                   ${list.map(s => `
                     <tr>
-                      <td style="font-weight:600;">${s.item}</td>
+                      <td style="font-weight:600;">${s.item}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${s.endereco}</small>` : ''}</td>
                       <td class="mono" style="font-weight:700;">${s.quantidade}</td>
                       <td class="dim">${s.setor || '—'}<br><small class="mono">${s.centroCusto || ''}</small></td>
                       <td><span class="badge urg-${s.urgencia}">${s.urgencia.toUpperCase()}</span></td>
@@ -947,25 +1074,45 @@
     // Converte os produtos filtrados em cartões HTML individuais.
     grid.innerHTML = filtered.map(p => {
       const estVal = Number(p.estoque || 0);
-      const isSelected = state.form.produtoIds.includes(p.id);
+      const isSelected = Object.prototype.hasOwnProperty.call(state.form.itens, p.id);
+      const qtd = isSelected ? state.form.itens[p.id] : 1;
       return `
         <div class="product-card ${isSelected ? 'selected' : ''}" data-id="${p.id}">
           <div class="cat">${p.categoria || ''}</div>
           <h4>${p.nome}</h4>
           <div class="dim mono" style="font-size:11px; margin-top:4px;">SKU: ${p.sku || '—'} | Estoque: <strong style="color:${estVal > 5 ? 'var(--text)' : 'var(--danger)'};">${estVal}</strong></div>
+          ${isSelected ? `
+            <div class="field" style="margin-top:10px;" onclick="event.stopPropagation();">
+              <label style="margin-bottom:4px;">Quantidade deste item</label>
+              <input type="number" min="1" max="${estVal || 999}" value="${qtd}" class="qtd-item-input" data-id="${p.id}">
+            </div>
+          ` : ''}
         </div>
       `;
     }).join('');
 
     // Percorre os cartões para configurar a seleção de produtos.
     grid.querySelectorAll('.product-card').forEach(card => {
-      // Alterna a seleção do produto clicado e atualiza a grade.
+      // Alterna a seleção do produto clicado (clique fora do campo de quantidade).
       card.onclick = () => {
         const id = card.dataset.id;
         state.form.usarLivre = false;
-        const index = state.form.produtoIds.indexOf(id);
-        if (index > -1) { state.form.produtoIds.splice(index, 1); } else { state.form.produtoIds.push(id); }
+        if(Object.prototype.hasOwnProperty.call(state.form.itens, id)){
+          delete state.form.itens[id];
+        } else {
+          state.form.itens[id] = 1;
+        }
         renderGridOnly();
+      };
+    });
+
+    // Permite ajustar a quantidade de cada item selecionado individualmente.
+    grid.querySelectorAll('.qtd-item-input').forEach(input => {
+      input.onclick = (e) => e.stopPropagation();
+      input.oninput = (e) => {
+        const id = input.dataset.id;
+        const val = parseInt(e.target.value) || 1;
+        state.form.itens[id] = val < 1 ? 1 : val;
       };
     });
   }
@@ -993,7 +1140,7 @@
           <tbody>
             ${list.map(s => `
               <tr>
-                <td style="font-weight:600;">${s.item}</td>
+                <td style="font-weight:600;">${s.item}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${s.endereco}</small>` : ''}</td>
                 <td class="mono" style="font-weight:700;">${s.quantidade}</td>
                 <td class="dim">${s.setor || '—'}<br><small class="mono">${s.centroCusto || ''}</small></td>
                 <td><span class="badge urg-${s.urgencia}">${s.urgencia.toUpperCase()}</span></td>
@@ -1062,9 +1209,36 @@
       };
     };
 
-    bindFormLive('f-qtd', 'quantidade', v => parseInt(v)||0);
     bindFormLive('f-motivo', 'motivo');
     bindFormLive('f-item-livre', 'itemLivre');
+    bindFormLive('f-qtd-livre', 'quantidadeLivre', v => parseInt(v)||1);
+
+    // Cria uma função auxiliar para os campos aninhados em state.form.endereco.
+    const bindEnderecoLive = (id, key, parser) => {
+      const node = content.querySelector('#'+id);
+      if(!node) return;
+      node.oninput = (e) => {
+        state.form.endereco[key] = parser ? parser(e.target.value) : e.target.value;
+      };
+    };
+
+    bindEnderecoLive('f-logradouro', 'logradouro');
+    bindEnderecoLive('f-numero', 'numero');
+    bindEnderecoLive('f-complemento', 'complemento');
+    bindEnderecoLive('f-bairro', 'bairro');
+    bindEnderecoLive('f-cidade', 'cidade');
+    bindEnderecoLive('f-uf', 'uf', v => v.toUpperCase().slice(0,2));
+
+    const cepInput = content.querySelector('#f-cep');
+    if(cepInput){
+      // Formata visualmente o CEP e dispara a busca automática ao completar 8 dígitos.
+      cepInput.oninput = (e) => {
+        const digits = e.target.value.replace(/\D/g,'').slice(0,8);
+        e.target.value = digits.length > 5 ? digits.replace(/(\d{5})(\d{0,3})/, '$1-$2') : digits;
+        state.form.endereco.cep = digits;
+        if(digits.length === 8){ buscarCep(digits); }
+      };
+    }
 
     const urgSel = content.querySelector('#f-urgencia');
     // Atualiza a prioridade sempre que o valor do select for alterado.
@@ -1086,20 +1260,10 @@
     }
 
     const toggle = content.querySelector('#toggle-outro');
-    // Alterna entre catálogo padrão e item personalizado.
+    // Alterna entre catálogo padrão e item personalizado (recarrega o formulário inteiro).
     if(toggle) toggle.onclick = () => {
       state.form.usarLivre = !state.form.usarLivre;
-      const container = content.querySelector('#custom-item-container');
-      if(container){
-        container.innerHTML = state.form.usarLivre ? `
-          <div class="field" style="margin-top:12px;">
-            <label>Descrição do Item Especial <span class="req">*</span></label>
-            <input id="f-item-livre" value="${state.form.itemLivre}" placeholder="Informe especificações técnicas, modelo ou marca desejada">
-          </div>
-        ` : '';
-        bindFormLive('f-item-livre', 'itemLivre');
-      }
-      toggle.textContent = state.form.usarLivre ? '← Voltar ao catálogo padronizado' : 'Item não listado? Descrever produto personalizado →';
+      render();
     };
 
     const logoutBtn = content.querySelector('#btn-logout');
