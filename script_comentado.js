@@ -2,8 +2,6 @@
 (function(){
   const app = document.getElementById('app');
   const EMAIL_RESPONSAVEL = 'yuri.silva1@sgs.com';
-  const WEBHOOK_EMAIL_ENDPOINT = 'https://httpbin.org/post';
-  const API_SALVAR_EMAIL_DADOS = 'https://httpbin.org/post';
 
   let state = {
     loaded: false,
@@ -560,52 +558,60 @@
     showToast('Relatório Excel exportado!');
   }
 
-  // Envia os dados da solicitação para a API responsável por salvá-los (apenas notificação por e-mail).
-  async function salvarEmailAPI(payload) {
+  // Envia um e-mail real via a Edge Function "send-email" (que usa a Resend).
+  // Precisa de sessão ativa porque a função exige um usuário autenticado.
+  async function enviarEmail({ to, subject, html, text }){
+    if(!state.session) return { error: 'Sem sessão ativa.' };
     try {
-      const response = await fetch(API_SALVAR_EMAIL_DADOS, {
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/send-email`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'salvar_email_solicitacao',
-          emailDestino: EMAIL_RESPONSAVEL,
-          dadosSolicitacao: payload,
-          timestamp: new Date().toISOString()
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${state.session.access_token}`
+        },
+        body: JSON.stringify({ to, subject, html, text })
       });
-      if (!response.ok) {
-        throw new Error('Falha ao comunicar com a API de salvamento de e-mails.');
-      }
-      return await response.json();
-    } catch (error) {
-      console.error('Erro na API de salvamento de e-mail:', error);
-      throw error;
+      const data = await resp.json();
+      if(!resp.ok){ return { error: data.error || 'Falha ao enviar e-mail.' }; }
+      return { data };
+    } catch (err) {
+      return { error: err.message || 'Falha ao enviar e-mail.' };
     }
   }
 
-  // Envia a solicitação por e-mail e controla o status de envio exibido ao usuário.
+  // Monta e envia o e-mail de notificação para a central de suprimentos sobre uma nova solicitação.
   async function enviarEmailAutomatico(payload) {
     state.sending = true;
     state.lastStatus = { type: 'sending', msg: 'Encaminhando solicitação...' };
     render();
 
-    try {
-      await Promise.all([
-        fetch(WEBHOOK_EMAIL_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: EMAIL_RESPONSAVEL, subject: `[SUPRIMENTOS] Solicitação de ${payload.nome} (${payload.email})`, payload: payload })
-        }),
-        salvarEmailAPI(payload)
-      ]);
+    const assunto = `[SUPRIMENTOS] Nova solicitação de ${payload.nome}`;
+    const html = `
+      <div style="font-family:sans-serif; max-width:560px;">
+        <h2 style="color:#FF7F11;">Nova Solicitação de Material</h2>
+        <table style="border-collapse:collapse; width:100%; font-size:14px;">
+          <tr><td style="padding:6px 0; color:#666;">Solicitante</td><td style="padding:6px 0;"><strong>${esc(payload.nome)}</strong></td></tr>
+          <tr><td style="padding:6px 0; color:#666;">E-mail</td><td style="padding:6px 0;">${esc(payload.email)}</td></tr>
+          <tr><td style="padding:6px 0; color:#666;">Matrícula</td><td style="padding:6px 0;">${esc(payload.matricula) || '—'}</td></tr>
+          <tr><td style="padding:6px 0; color:#666;">Setor</td><td style="padding:6px 0;">${esc(payload.setor) || '—'}</td></tr>
+          <tr><td style="padding:6px 0; color:#666;">Centro de Custo</td><td style="padding:6px 0;">${esc(payload.centroCusto) || '—'}</td></tr>
+          <tr><td style="padding:6px 0; color:#666;">Item(ns)</td><td style="padding:6px 0;"><strong>${esc(payload.item)}</strong></td></tr>
+          <tr><td style="padding:6px 0; color:#666;">Quantidade Total</td><td style="padding:6px 0;">${esc(payload.quantidade)}</td></tr>
+          <tr><td style="padding:6px 0; color:#666;">Urgência</td><td style="padding:6px 0;">${esc((payload.urgencia||'').toUpperCase())}</td></tr>
+          <tr><td style="padding:6px 0; color:#666; vertical-align:top;">Endereço de Entrega</td><td style="padding:6px 0;">${esc(payload.endereco) || '—'}</td></tr>
+          <tr><td style="padding:6px 0; color:#666; vertical-align:top;">Observações</td><td style="padding:6px 0;">${esc(payload.motivo) || '—'}</td></tr>
+        </table>
+        <p style="color:#999; font-size:12px; margin-top:24px;">Acesse o painel administrativo para aprovar ou rejeitar este pedido.</p>
+      </div>
+    `;
 
-      state.lastStatus = { type: 'success', msg: `Solicitação enviada e e-mail salvo com sucesso!` };
-    } catch (err) {
-      state.lastStatus = { type: 'success', msg: `Pedido salvo no seu perfil com sucesso!` };
-    } finally {
-      state.sending = false;
-      render();
-    }
+    const { error } = await enviarEmail({ to: EMAIL_RESPONSAVEL, subject: assunto, html });
+
+    state.lastStatus = error
+      ? { type: 'success', msg: 'Pedido salvo com sucesso! (o e-mail de notificação não pôde ser enviado agora, mas seu pedido está registrado)' }
+      : { type: 'success', msg: 'Solicitação enviada e e-mail de notificação encaminhado com sucesso!' };
+    state.sending = false;
+    render();
   }
 
   // Valida o formulário, envia para o banco (que confere estoque e debita numa transação) e notifica.
