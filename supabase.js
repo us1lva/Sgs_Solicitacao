@@ -155,8 +155,9 @@ const db = {
       endereco: row.endereco,
       status: row.status,
       dataCriacao: row.data_criacao,
-      // Itens do catálogo com a quantidade individual de cada um (não mais um valor único).
-      itens: itens.filter(i => i.solicitacao_id === row.id).map(i => ({ produtoId: i.produto_id, quantidade: i.quantidade }))
+      // Itens do catálogo com a quantidade individual de cada um, e se estava
+      // disponível em estoque no momento do pedido (senão, aguarda reposição).
+      itens: itens.filter(i => i.solicitacao_id === row.id).map(i => ({ produtoId: i.produto_id, quantidade: i.quantidade, disponivel: i.disponivel }))
     }));
   },
 

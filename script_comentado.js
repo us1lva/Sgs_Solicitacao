@@ -585,9 +585,24 @@
     state.lastStatus = { type: 'sending', msg: 'Encaminhando solicitação...' };
     render();
 
-    const assunto = `[SUPRIMENTOS] Nova solicitação de ${payload.nome}`;
+    const temItensSemEstoque = payload.itensSemEstoque && payload.itensSemEstoque.length > 0;
+    const assunto = temItensSemEstoque
+      ? `[URGENTE - SEM ESTOQUE] Solicitação de ${payload.nome}`
+      : `[SUPRIMENTOS] Nova solicitação de ${payload.nome}`;
+
+    const alertaHtml = temItensSemEstoque ? `
+      <div style="background:#FEE2E2; border:1px solid #FF3F00; border-radius:8px; padding:12px 16px; margin-bottom:16px;">
+        <strong style="color:#FF3F00;">⚠️ COMPRA URGENTE NECESSÁRIA</strong>
+        <p style="margin:6px 0 0; font-size:13.5px; color:#7A1F00;">
+          O(s) item(ns) abaixo não têm estoque disponível no momento e precisam ser comprados para atender este pedido:
+          <br><strong>${payload.itensSemEstoque.map(esc).join(', ')}</strong>
+        </p>
+      </div>
+    ` : '';
+
     const html = `
       <div style="font-family:sans-serif; max-width:560px;">
+        ${alertaHtml}
         <h2 style="color:#FF7F11;">Nova Solicitação de Material</h2>
         <table style="border-collapse:collapse; width:100%; font-size:14px;">
           <tr><td style="padding:6px 0; color:#666;">Solicitante</td><td style="padding:6px 0;"><strong>${esc(payload.nome)}</strong></td></tr>
@@ -607,9 +622,13 @@
 
     const { error } = await enviarEmail({ to: EMAIL_RESPONSAVEL, subject: assunto, html });
 
-    state.lastStatus = error
-      ? { type: 'success', msg: 'Pedido salvo com sucesso! (o e-mail de notificação não pôde ser enviado agora, mas seu pedido está registrado)' }
-      : { type: 'success', msg: 'Solicitação enviada e e-mail de notificação encaminhado com sucesso!' };
+    if(error){
+      state.lastStatus = { type: 'success', msg: 'Pedido salvo com sucesso! (o e-mail de notificação não pôde ser enviado agora, mas seu pedido está registrado)' };
+    } else if(temItensSemEstoque){
+      state.lastStatus = { type: 'warning', msg: `Solicitação enviada! Atenção: ${payload.itensSemEstoque.join(', ')} está(ão) sem estoque no momento — a central de suprimentos foi avisada com urgência.` };
+    } else {
+      state.lastStatus = { type: 'success', msg: 'Solicitação enviada e e-mail de notificação encaminhado com sucesso!' };
+    }
     state.sending = false;
     render();
   }
@@ -679,6 +698,13 @@
     state.produtos = produtos;
     state.solicitacoes = solicitacoes;
 
+    // Verifica se algum item do pedido que acabou de ser criado ficou sem estoque
+    // (o banco permite o pedido seguir mesmo assim, só marca o item pra reposição).
+    const pedidoCriado = solicitacoes.find(s => s.id === (registro && registro.id));
+    const itensSemEstoque = pedidoCriado ? (pedidoCriado.itens || []).filter(i => i.disponivel === false) : [];
+    const nomesPorIdFinal = Object.fromEntries(produtos.map(p2 => [p2.id, p2.nome]));
+    const nomesSemEstoque = itensSemEstoque.map(i => nomesPorIdFinal[i.produtoId] || 'item');
+
     state.form.itens = {};
     state.form.itemLivre = '';
     state.form.quantidadeLivre = 1;
@@ -696,7 +722,8 @@
       urgencia: f.urgencia,
       motivo: f.motivo,
       endereco: enderecoTexto,
-      status: registro ? registro.status : 'pendente'
+      status: registro ? registro.status : 'pendente',
+      itensSemEstoque: nomesSemEstoque
     });
   }
 
@@ -1198,7 +1225,7 @@
                 <tbody>
                   ${list.map(s => `
                     <tr>
-                      <td style="font-weight:600;">${esc(s.item)}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
+                      <td style="font-weight:600;">${destacarSemEstoque(esc(s.item))}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
                       <td class="mono" style="font-weight:700;">${s.quantidade}</td>
                       <td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td>
                       <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
@@ -1231,6 +1258,12 @@
     return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // Destaca em vermelho o marcador "[SEM ESTOQUE]" que o banco já embute no texto
+  // do item quando algum produto do pedido está sem disponibilidade no momento.
+  function destacarSemEstoque(textoEscapado){
+    return textoEscapado.replace(/\[SEM ESTOQUE\]/g, '<strong style="color:var(--danger);">[SEM ESTOQUE — compra urgente]</strong>');
+  }
+
   // Atualiza somente a grade de produtos, preservando o restante da tela.
   function renderGridOnly(){
     const grid = document.getElementById('product-grid');
@@ -1242,17 +1275,22 @@
     // Converte os produtos filtrados em cartões HTML individuais.
     grid.innerHTML = filtered.map(p => {
       const estVal = Number(p.estoque || 0);
+      const semEstoque = estVal <= 0;
       const isSelected = Object.prototype.hasOwnProperty.call(state.form.itens, p.id);
       const qtd = isSelected ? state.form.itens[p.id] : 1;
       return `
         <div class="product-card ${isSelected ? 'selected' : ''}" data-id="${p.id}">
-          <div class="cat">${esc(p.categoria)}</div>
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+            <div class="cat">${esc(p.categoria)}</div>
+            ${semEstoque ? `<span style="font-size:10px; font-weight:700; color:#fff; background:var(--danger); padding:2px 7px; border-radius:10px; letter-spacing:.03em;">SEM ESTOQUE</span>` : ''}
+          </div>
           <h4>${esc(p.nome)}</h4>
           <div class="dim mono" style="font-size:11px; margin-top:4px;">SKU: ${p.sku ? esc(p.sku) : '—'} | Estoque: <strong style="color:${estVal > 5 ? 'var(--text)' : 'var(--danger)'};">${estVal}</strong></div>
           ${isSelected ? `
             <div class="field" style="margin-top:10px;" onclick="event.stopPropagation();">
               <label style="margin-bottom:4px;">Quantidade deste item</label>
-              <input type="number" min="1" max="${estVal || 999}" value="${qtd}" class="qtd-item-input" data-id="${p.id}">
+              <input type="number" min="1" max="999" value="${qtd}" class="qtd-item-input" data-id="${p.id}">
+              ${semEstoque ? `<div style="font-size:11px; color:var(--danger); margin-top:4px;">⚠️ Sem estoque agora — será comprado com urgência para atender seu pedido.</div>` : ''}
             </div>
           ` : ''}
         </div>
@@ -1308,7 +1346,7 @@
           <tbody>
             ${list.map(s => `
               <tr>
-                <td style="font-weight:600;">${esc(s.item)}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
+                <td style="font-weight:600;">${destacarSemEstoque(esc(s.item))}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
                 <td class="mono" style="font-weight:700;">${s.quantidade}</td>
                 <td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td>
                 <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
