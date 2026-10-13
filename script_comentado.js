@@ -1216,6 +1216,28 @@
       </div>
     `);
 
+    // Organiza cada bloco do formulário em uma área independente do layout.
+    const formBlocks = Array.from(panel.children);
+    formBlocks[0]?.classList.add('form-title');
+    formBlocks[1]?.classList.add('form-profile');
+    formBlocks[2]?.classList.add('form-sector');
+    formBlocks[3]?.classList.add('form-divider');
+    formBlocks[4]?.classList.add('form-info');
+    formBlocks[5]?.classList.add('form-catalog');
+    formBlocks[6]?.classList.add('form-custom-item');
+    formBlocks[7]?.classList.add('form-urgency');
+    formBlocks[8]?.classList.add('form-divider-secondary');
+    formBlocks[9]?.classList.add('form-address-title');
+    formBlocks[10]?.classList.add('form-address-main');
+    formBlocks[11]?.classList.add('form-cep-error');
+    const numberRow = panel.querySelector('.field-row-3:has(#f-numero)');
+    const cityRow = panel.querySelector('.field-row:has(#f-cidade)');
+    numberRow?.classList.add('form-address-number');
+    cityRow?.classList.add('form-address-city');
+    panel.querySelector('.field:has(#f-motivo)')?.classList.add('form-notes');
+    panel.querySelector('#form-error-box')?.classList.add('form-error');
+    panel.querySelector('#submit-btn')?.classList.add('form-submit');
+
     // Abre o modal com as informações detalhadas da planilha.
     panel.querySelector('#btn-ver-info').onclick = () => {
       state.showInfoModal = true;
