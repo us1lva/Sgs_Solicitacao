@@ -563,3 +563,140 @@ button.secondary{border-radius:9px}
   .workspace-tab-icon{display:none}
   .product-grid{grid-template-columns:1fr;max-height:240px}
 }
+
+/* ===== Correção de estrutura: componentes separados, sem scroll no painel inteiro ===== */
+html, body, #app { height:100%; }
+html, body { overflow:hidden !important; }
+#app { height:100dvh; min-height:0; overflow:hidden; }
+.content { min-height:0; overflow:hidden; }
+.content > .panel:not(#history-panel-box) {
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) minmax(0, 1.08fr);
+  grid-template-areas:
+    "head head"
+    "profile catalog"
+    "sector catalog"
+    "divider catalog"
+    "info catalog"
+    "address-title custom"
+    "cep urgency"
+    "number notes"
+    "city error"
+    "formerror submit";
+  align-content:start;
+  align-items:start;
+  gap:7px 18px;
+  overflow:visible !important;
+  min-height:0;
+  height:auto;
+  max-height:none;
+  padding:14px 18px;
+}
+.content > .panel:not(#history-panel-box) > .panel-head { grid-area:head; margin:0 0 2px; }
+.content > .panel:not(#history-panel-box) > .field-row-3:nth-of-type(1) { grid-area:profile; }
+.content > .panel:not(#history-panel-box) > .field-row:nth-of-type(2) { grid-area:sector; }
+.content > .panel:not(#history-panel-box) > hr:nth-of-type(1) { grid-area:divider; width:100%; margin:0 !important; }
+.content > .panel:not(#history-panel-box) > .field:has(#btn-ver-info) { grid-area:info; margin:0 !important; }
+.content > .panel:not(#history-panel-box) > .field:has(#product-grid) { grid-area:catalog; min-width:0; margin:0; padding:12px; border:1px solid var(--border); border-radius:12px; background:color-mix(in srgb,var(--panel-2) 52%,transparent); }
+.content > .panel:not(#history-panel-box) > #custom-item-container { grid-area:custom; min-width:0; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-urgencia) { grid-area:urgency; margin:0 !important; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-cep) { grid-area:cep; margin:0; }
+.content > .panel:not(#history-panel-box) > .field-row-3:has(#f-numero) { grid-area:number; }
+.content > .panel:not(#history-panel-box) > .field-row:has(#f-cidade) { grid-area:city; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-motivo) { grid-area:notes; margin:0 !important; }
+.content > .panel:not(#history-panel-box) > #form-error-box { grid-area:formerror; align-self:center; margin:0 !important; }
+.content > .panel:not(#history-panel-box) > #submit-btn { grid-area:submit; align-self:end; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-cep)::before { content:"Endereço de entrega"; display:block; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--text-dim); margin:0 0 7px; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-cep) { display:flex; flex-direction:column; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-cep) label { display:none; }
+.content > .panel:not(#history-panel-box) > .field-row-3:has(#f-logradouro) { grid-area:cep; margin-top:35px; }
+.content > .panel:not(#history-panel-box) > .field-row-3:has(#f-numero) { grid-area:number; }
+.content > .panel:not(#history-panel-box) > .field-row:has(#f-cidade) { grid-area:city; }
+.content > .panel:not(#history-panel-box) > hr:nth-of-type(2) { display:none; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-urgencia) { grid-area:urgency; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-urgencia) label { margin-top:0; }
+.content > .panel:not(#history-panel-box) > .field:has(#f-motivo) textarea { min-height:58px; }
+.content > .panel:not(#history-panel-box) .field-row,
+.content > .panel:not(#history-panel-box) .field-row-3 { gap:8px; }
+.content > .panel:not(#history-panel-box) .field { min-width:0; margin-bottom:0; }
+.content > .panel:not(#history-panel-box) .field-row .field,
+.content > .panel:not(#history-panel-box) .field-row-3 .field { margin-bottom:0; }
+.content > .panel:not(#history-panel-box) input,
+.content > .panel:not(#history-panel-box) select { min-width:0; min-height:33px; }
+.product-grid {
+  max-height:clamp(170px, 29vh, 270px) !important;
+  overflow-y:auto !important;
+  overflow-x:hidden !important;
+  overscroll-behavior:contain;
+  padding:4px 5px 5px 2px;
+}
+.product-card { min-width:0; }
+#history-panel-box { overflow:hidden !important; display:flex; flex-direction:column; min-height:0; }
+#history-table-wrapper { min-height:0; flex:1 1 auto; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+#history-table-wrapper > div { max-width:100%; }
+#history-panel-box .panel-head { flex:0 0 auto; }
+@media (max-height:820px) and (min-width:761px) {
+  .header-bar { min-height:50px; padding-top:6px; padding-bottom:6px; }
+  .content { gap:7px; padding-top:7px; padding-bottom:7px; }
+  .user-session-bar { min-height:34px; padding:4px 9px; }
+  .kpi-card { min-height:54px; padding:7px 11px 7px 14px; }
+  .kpi-card .val { font-size:20px; margin-top:2px; }
+  .workspace-tabs { padding:3px; }
+  .workspace-tab { min-height:34px; padding:4px 9px; }
+  .content > .panel:not(#history-panel-box) { gap:5px 12px; padding:10px 14px; }
+  .content > .panel:not(#history-panel-box) .field-row,
+  .content > .panel:not(#history-panel-box) .field-row-3 { gap:6px; }
+  .product-grid { max-height:clamp(130px, 23vh, 205px) !important; }
+}
+@media (max-width:760px) {
+  html, body { overflow:auto !important; }
+  #app { height:auto; min-height:100dvh; overflow:visible; }
+  .content { overflow:visible; }
+  .content > .panel:not(#history-panel-box) { display:flex; flex-direction:column; overflow:visible !important; }
+  .content > .panel:not(#history-panel-box) > * { width:100%; }
+  .content > .panel:not(#history-panel-box) > .field:has(#f-cep)::before { display:none; }
+  .content > .panel:not(#history-panel-box) > .field:has(#f-cep) label { display:block; }
+  .content > .panel:not(#history-panel-box) > .field-row-3:has(#f-logradouro) { margin-top:0; }
+  .product-grid { max-height:260px !important; }
+  #history-panel-box { overflow:visible !important; }
+  #history-table-wrapper { overflow:auto; max-height:60vh; }
+}
+/* Named layout areas assigned by the form builder; overrides fragile DOM ordering. */
+.content > .panel:not(#history-panel-box) {
+  grid-template-areas:
+    "head head"
+    "profile catalog"
+    "sector catalog"
+    "divider catalog"
+    "info catalog"
+    "address-title custom"
+    "address-main urgency"
+    "address-number notes"
+    "address-city notes"
+    "cep-error formerror"
+    "submit submit";
+}
+.form-title { grid-area:head; }
+.form-profile { grid-area:profile; }
+.form-sector { grid-area:sector; }
+.form-divider { grid-area:divider; }
+.form-info { grid-area:info; }
+.form-catalog { grid-area:catalog; min-width:0; }
+.form-custom-item { grid-area:custom; min-width:0; }
+.form-urgency { grid-area:urgency; }
+.form-divider-secondary { display:none !important; }
+.form-address-title { grid-area:address-title; margin:0 !important; }
+.form-address-title label { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--text-dim); }
+.form-address-main { grid-area:address-main; margin:0; }
+.form-address-number { grid-area:address-number; }
+.form-address-city { grid-area:address-city; }
+.form-cep-error { grid-area:cep-error; align-self:center; }
+.form-notes { grid-area:notes; }
+.form-error { grid-area:formerror; align-self:center; }
+.form-submit { grid-area:submit; }
+@media(max-width:760px) {
+  .content > .panel:not(#history-panel-box) { grid-template-areas:none; }
+  .form-title,.form-profile,.form-sector,.form-divider,.form-info,.form-catalog,
+  .form-custom-item,.form-urgency,.form-address-title,.form-address-main,
+  .form-address-number,.form-address-city,.form-cep-error,.form-notes,.form-error,.form-submit { grid-area:auto; }
+}
