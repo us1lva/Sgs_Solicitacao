@@ -30,7 +30,11 @@
     lastStatus: null,
     toast: null,
     showInfoModal: false,
-    activeTab: 'epis'
+    activeTab: 'epis',
+    requestStep: 0,
+    requestStepMax: 0,
+    catalogCategory: 'todas',
+    historyOpen: false
   };
 
   document.documentElement.setAttribute('data-theme', state.theme);
@@ -639,10 +643,11 @@
     const p = state.userProfile;
     state.error = '';
 
-    if(!p.nome.trim()){ state.error = 'Preencha o seu nome completo.'; render(); return; }
+    if(!p.nome.trim()){ state.error = 'Preencha o seu nome completo.'; state.requestStep = 0; render(); return; }
 
     if(!enderecoValido(f.endereco)){
       state.error = 'Informe o endereço de entrega completo (CEP, número e cidade/UF).';
+      state.requestStep = 2;
       render();
       return;
     }
@@ -652,15 +657,15 @@
     let quantidadeTotal = 0;
 
     if(f.usarLivre){
-      if(!f.itemLivre.trim()){ state.error = 'Especifique o item personalizado.'; render(); return; }
-      if(!f.quantidadeLivre || f.quantidadeLivre < 1){ state.error = 'Informe uma quantidade válida.'; render(); return; }
+      if(!f.itemLivre.trim()){ state.error = 'Especifique o item personalizado.'; state.requestStep = 1; render(); return; }
+      if(!f.quantidadeLivre || f.quantidadeLivre < 1){ state.error = 'Informe uma quantidade válida.'; state.requestStep = 1; render(); return; }
       itemResumo = f.itemLivre.trim();
       quantidadeTotal = f.quantidadeLivre;
     } else {
       const idsSelecionados = Object.keys(f.itens);
-      if(idsSelecionados.length === 0){ state.error = 'Selecione ao menos um item do catálogo.'; render(); return; }
+      if(idsSelecionados.length === 0){ state.error = 'Selecione ao menos um item do catálogo.'; state.requestStep = 1; render(); return; }
       for(const id of idsSelecionados){
-        if(!f.itens[id] || f.itens[id] < 1){ state.error = 'Informe uma quantidade válida para cada item selecionado.'; render(); return; }
+        if(!f.itens[id] || f.itens[id] < 1){ state.error = 'Informe uma quantidade válida para cada item selecionado.'; state.requestStep = 1; render(); return; }
       }
       itens = idsSelecionados.map(id => ({ produtoId: id, quantidade: f.itens[id] }));
       const nomesPorId = Object.fromEntries(state.produtos.map(p2 => [p2.id, p2.nome]));
@@ -707,8 +712,13 @@
 
     state.form.itens = {};
     state.form.itemLivre = '';
+    state.form.usarLivre = false;
     state.form.quantidadeLivre = 1;
     state.form.motivo = '';
+    state.busca = '';
+    state.catalogCategory = 'todas';
+    state.requestStep = 0;
+    state.requestStepMax = 0;
     // Mantém o endereço preenchido (é comum pedir de novo pro mesmo lugar).
 
     await enviarEmailAutomatico({
@@ -1058,190 +1068,234 @@
   }
 
 
-  // Constrói o painel de nova requisição e seus campos de preenchimento.
+  // Valida etapas individuais do fluxo, para orientar o usuário antes do envio.
+  function validarEtapaRequisicao(etapa){
+    const f = state.form;
+    if(etapa === 0 && !state.userProfile.nome.trim()){
+      state.error = 'Informe seu nome completo para continuar.';
+      return false;
+    }
+    if(etapa === 1){
+      if(f.usarLivre){
+        if(!f.itemLivre.trim()){
+          state.error = 'Descreva o material personalizado antes de continuar.';
+          return false;
+        }
+        if(!f.quantidadeLivre || f.quantidadeLivre < 1){
+          state.error = 'Informe uma quantidade válida para o material personalizado.';
+          return false;
+        }
+      } else {
+        const ids = Object.keys(f.itens);
+        if(!ids.length){
+          state.error = 'Selecione ao menos um material para continuar.';
+          return false;
+        }
+        if(ids.some(id => !f.itens[id] || f.itens[id] < 1)){
+          state.error = 'Confira a quantidade de cada material selecionado.';
+          return false;
+        }
+      }
+    }
+    if(etapa === 2 && !enderecoValido(f.endereco)){
+      state.error = 'Complete o endereço de entrega: CEP, logradouro, número e cidade/UF.';
+      return false;
+    }
+    state.error = '';
+    return true;
+  }
+
+  // Permite avançar apenas quando a etapa anterior estiver preenchida.
+  function navegarEtapaRequisicao(destino){
+    const proximo = Math.max(0, Math.min(2, Number(destino)));
+    if(proximo > state.requestStep){
+      for(let etapa = state.requestStep; etapa < proximo; etapa++){
+        if(!validarEtapaRequisicao(etapa)){
+          state.requestStep = etapa;
+          render();
+          return;
+        }
+      }
+    }
+    state.error = '';
+    state.requestStep = proximo;
+    state.requestStepMax = Math.max(state.requestStepMax, proximo);
+    render();
+    const active = document.querySelector('.request-stage.is-active');
+    if(active) active.setAttribute('tabindex', '-1');
+  }
+
+  function resumoMateriaisRequisicao(){
+    const f = state.form;
+    if(f.usarLivre){
+      const nome = f.itemLivre.trim();
+      return nome ? [{nome, quantidade: Number(f.quantidadeLivre) || 1, semEstoque: false}] : [];
+    }
+    const porId = new Map(state.produtos.map(p => [String(p.id), p]));
+    return Object.entries(f.itens).map(([id, quantidade]) => {
+      const produto = porId.get(String(id));
+      return {nome: produto ? produto.nome : 'Material do catálogo', quantidade: Number(quantidade) || 1, semEstoque: produto ? Number(produto.estoque || 0) <= 0 : false};
+    });
+  }
+
+  // Constrói o formulário em 3 etapas para reduzir rolagem e deixar o fluxo claro.
   function buildFormPanel(){
     const f = state.form;
     const p = state.userProfile;
+    const step = Math.max(0, Math.min(2, Number(state.requestStep) || 0));
+    const etapas = [
+      {titulo:'Seus dados', apoio:'Confirme quem está solicitando os materiais.'},
+      {titulo:'Materiais', apoio:'Escolha os itens e informe as quantidades.'},
+      {titulo:'Entrega e revisão', apoio:'Informe o destino e confira antes de enviar.'}
+    ];
+    const categorias = [...new Set(state.produtos.map(prod => (prod.categoria || 'Outros').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+    const resumo = resumoMateriaisRequisicao();
+    const totalQtd = resumo.reduce((soma, item) => soma + (Number(item.quantidade) || 0), 0);
+    const resumoHtml = resumo.length ? resumo.map(item => `
+      <div class="request-review-item">
+        <span class="request-review-dot ${item.semEstoque ? 'is-out' : ''}"></span>
+        <span class="request-review-name">${esc(item.nome)}${item.semEstoque ? ' <small>• compra necessária</small>' : ''}</span>
+        <strong>×${esc(item.quantidade)}</strong>
+      </div>`).join('') : '<div class="request-review-empty">Nenhum material selecionado ainda.</div>';
 
     const panel = elFrag(`
-      <div class="panel">
-        <div class="panel-head"><h3>Nova Requisição de Material</h3></div>
-
-        <div class="field-row-3">
-          <div class="field">
-            <label>Nome Completo <span class="req">*</span></label>
-            <input id="p-nome" value="${esc(p.nome)}" placeholder="Seu nome completo">
+      <section class="panel request-panel" id="request-panel">
+        <div class="request-panel-heading">
+          <div>
+            <span class="request-eyebrow">PORTAL DE SUPRIMENTOS</span>
+            <h3>Nova solicitação</h3>
+            <p>Preencha as etapas abaixo para registrar seu pedido.</p>
           </div>
-          <div class="field">
-            <label>Matrícula / ID</label>
-            <input id="p-matricula" value="${esc(p.matricula)}" placeholder="Ex: M-10293">
-          </div>
-          <div class="field">
-            <label>E-mail (Chave da Conta)</label>
-            <input value="${esc(state.currentUserEmail)}" readonly style="opacity:0.7; cursor:not-allowed;">
-          </div>
+          <div class="request-heading-mark" aria-hidden="true"><span>＋</span></div>
         </div>
 
-        <div class="field-row">
-          <div class="field">
-            <label>Departamento / Setor</label>
-            <input id="p-setor" value="${esc(p.setor)}" placeholder="Ex: Operações / RH">
+        <nav class="request-stepper" aria-label="Etapas da solicitação">
+          ${etapas.map((etapa, i) => `
+            <button type="button" class="request-step-btn ${step === i ? 'is-active' : ''} ${state.requestStepMax > i ? 'is-complete' : ''}" data-step="${i}" aria-current="${step === i ? 'step' : 'false'}">
+              <span class="request-step-number">${state.requestStepMax > i ? '✓' : i + 1}</span>
+              <span class="request-step-text"><strong>${etapa.titulo}</strong><small>${i === 0 ? 'Solicitante' : i === 1 ? 'Seleção' : 'Finalização'}</small></span>
+            </button>
+          `).join('')}
+          <div class="request-progress-track"><span style="width:${step === 0 ? 0 : step === 1 ? 50 : 100}%"></span></div>
+        </nav>
+
+        <div class="request-stage-intro">
+          <div><span class="request-stage-kicker">ETAPA ${step + 1} DE 3</span><h4>${etapas[step].titulo}</h4><p>${etapas[step].apoio}</p></div>
+          <span class="request-stage-pill">${step === 0 ? 'Perfil' : step === 1 ? `${resumo.length} ${resumo.length === 1 ? 'item' : 'itens'}` : 'Revisão final'}</span>
+        </div>
+
+        <div class="request-stage ${step === 0 ? 'is-active' : ''}" data-step-panel="0" ${step !== 0 ? 'hidden' : ''}>
+          <div class="request-section-title"><span class="request-section-icon">01</span><div><strong>Dados do solicitante</strong><small>Campos com * são obrigatórios.</small></div></div>
+          <div class="field-row-3 request-field-grid">
+            <div class="field"><label for="p-nome">Nome completo <span class="req">*</span></label><input id="p-nome" value="${esc(p.nome)}" placeholder="Seu nome completo" autocomplete="name" required></div>
+            <div class="field"><label for="p-matricula">Matrícula / ID</label><input id="p-matricula" value="${esc(p.matricula)}" placeholder="Ex.: M-10293"></div>
+            <div class="field"><label>E-mail da conta</label><input value="${esc(state.currentUserEmail)}" readonly aria-readonly="true" class="request-readonly"></div>
           </div>
-          <div class="field">
-            <label>Centro de Custo</label>
-            <input id="p-centro" value="${esc(p.centroCusto)}" placeholder="Ex: CC-3040">
+          <div class="field-row request-field-grid">
+            <div class="field"><label for="p-setor">Departamento / setor</label><input id="p-setor" value="${esc(p.setor)}" placeholder="Ex.: Operações / RH"></div>
+            <div class="field"><label for="p-centro">Centro de custo</label><input id="p-centro" value="${esc(p.centroCusto)}" placeholder="Ex.: CC-3040"></div>
           </div>
+          <div class="request-tip"><span>ⓘ</span> Seus dados ficam salvos no perfil para facilitar as próximas solicitações.</div>
+          <div class="request-stage-footer"><span class="request-footer-note">Próxima etapa: escolha de materiais</span><button type="button" class="primary request-next-btn" data-next="1">Continuar <span>→</span></button></div>
         </div>
 
-        <hr style="border:none; border-top:1px solid var(--border); margin:20px 0;">
-
-        <div class="field" style="margin-bottom:20px;">
-          <button class="secondary" id="btn-ver-info" style="width:100%; background:var(--panel-2); border-color:var(--amber); color:var(--text); font-weight:600; padding:12px;">
-            📋 Consultar Informações da Planilha (Abas: EPIs, ADM, Operação)
-          </button>
-        </div>
-
-        <div class="field">
-          <label>Selecione os Itens do Catálogo — informe a quantidade de cada um</label>
-          <input id="busca-item" placeholder="Filtrar item por nome ou SKU..." value="${esc(state.busca)}" style="margin-bottom:12px;">
-          <div class="product-grid" id="product-grid"></div>
-          <span id="toggle-outro" style="color:var(--steel); font-size:12px; cursor:pointer; text-decoration:underline;">
-            ${f.usarLivre ? '← Voltar ao catálogo padronizado' : 'Item não listado? Descrever produto personalizado →'}
-          </span>
-        </div>
-
-        <div id="custom-item-container">
+        <div class="request-stage ${step === 1 ? 'is-active' : ''}" data-step-panel="1" ${step !== 1 ? 'hidden' : ''}>
+          <div class="request-section-title"><span class="request-section-icon">02</span><div><strong>Seleção de materiais</strong><small>Selecione um ou mais produtos do catálogo.</small></div></div>
+          <div class="request-catalog-toolbar">
+            <button class="secondary request-info-btn" id="btn-ver-info" type="button"><span>▤</span> Consultar catálogo completo</button>
+            <button type="button" class="request-custom-toggle ${f.usarLivre ? 'is-selected' : ''}" id="toggle-outro">${f.usarLivre ? '← Voltar ao catálogo' : '+ Item não listado'}</button>
+          </div>
+          <div class="request-selection-summary" aria-live="polite">
+            <div class="request-selection-icon">▦</div>
+            <div class="request-selection-copy"><strong><span class="selection-count">${resumo.length}</span> ${resumo.length === 1 ? 'material selecionado' : 'materiais selecionados'}</strong><small><span class="selection-units">${totalQtd}</span> unidade(s) no total</small></div>
+            <span class="request-selection-live"><i></i> Atualizado</span>
+          </div>
           ${f.usarLivre ? `
-            <div class="field-row" style="margin-top:12px;">
-              <div class="field" style="flex:2;">
-                <label>Descrição do Item Especial <span class="req">*</span></label>
-                <input id="f-item-livre" value="${esc(f.itemLivre)}" placeholder="Informe especificações técnicas, modelo ou marca desejada">
-              </div>
-              <div class="field">
-                <label>Quantidade <span class="req">*</span></label>
-                <input id="f-qtd-livre" type="number" min="1" value="${f.quantidadeLivre}">
+            <div class="request-custom-card">
+              <div class="request-custom-card-head"><span>✦</span><div><strong>Material personalizado</strong><small>Descreva o produto que não aparece no catálogo.</small></div></div>
+              <div class="field-row request-field-grid">
+                <div class="field" style="flex:2"><label for="f-item-livre">Descrição do item <span class="req">*</span></label><input id="f-item-livre" value="${esc(f.itemLivre)}" placeholder="Especificação técnica, modelo ou marca" required></div>
+                <div class="field"><label for="f-qtd-livre">Quantidade <span class="req">*</span></label><input id="f-qtd-livre" type="number" min="1" max="999" value="${f.quantidadeLivre}" required></div>
               </div>
             </div>
-          ` : ''}
+          ` : `
+            <div class="request-catalog-controls">
+              <div class="request-search-wrap"><span>⌕</span><input id="busca-item" placeholder="Buscar por nome ou código SKU..." value="${esc(state.busca)}" aria-label="Buscar material"></div>
+              <select id="filtro-categoria" aria-label="Filtrar por categoria"><option value="todas">Todas as categorias</option>${categorias.map(cat => `<option value="${esc(cat)}" ${state.catalogCategory === cat ? 'selected' : ''}>${esc(cat)}</option>`).join('')}</select>
+            </div>
+            <div class="request-results-line"><span>Catálogo disponível</span><span id="catalog-results-count">${state.produtos.length} produto(s)</span></div>
+            <div class="product-grid request-product-grid" id="product-grid"></div>
+          `}
+          <div class="field request-priority-field"><label for="f-urgencia">Prioridade do pedido</label><select id="f-urgencia" class="request-priority-select"><option value="baixa" ${f.urgencia==='baixa'?'selected':''}>Baixa — rotina operacional</option><option value="normal" ${f.urgencia==='normal'?'selected':''}>Normal — necessidade regular</option><option value="alta" ${f.urgencia==='alta'?'selected':''}>Alta — impacto nas atividades</option></select></div>
+          <div class="request-stage-footer"><button type="button" class="secondary request-back-btn" data-back="0">← Voltar</button><span class="request-footer-note">Confira as quantidades antes de avançar</span><button type="button" class="primary request-next-btn" data-next="2">Continuar <span>→</span></button></div>
         </div>
 
-        <div class="field" style="margin-top:16px;">
-          <label>Prioridade / Urgência</label>
-          <select id="f-urgencia">
-            <option value="baixa" ${f.urgencia==='baixa'?'selected':''}>Baixa - Rotina operacional</option>
-            <option value="normal" ${f.urgencia==='normal'?'selected':''}>Normal - Necessidade regular</option>
-            <option value="alta" ${f.urgencia==='alta'?'selected':''}>Alta - Impacto em atividades</option>
-          </select>
+        <div class="request-stage ${step === 2 ? 'is-active' : ''}" data-step-panel="2" ${step !== 2 ? 'hidden' : ''}>
+          <div class="request-section-title"><span class="request-section-icon">03</span><div><strong>Entrega e conferência</strong><small>Informe onde os materiais devem ser entregues.</small></div></div>
+          <div class="request-address-panel">
+            <div class="request-address-heading"><div><strong>Endereço de entrega</strong><small>Digite o CEP para preencher o endereço automaticamente.</small></div><span>⌖</span></div>
+            <div class="field-row-3 request-field-grid">
+              <div class="field"><label for="f-cep">CEP <span class="req">*</span></label><div class="request-cep-wrap"><input id="f-cep" value="${esc(f.endereco.cep)}" placeholder="00000-000" maxlength="9" inputmode="numeric" autocomplete="postal-code" required>${f.buscandoCep ? '<span class="request-cep-spinner" aria-label="Consultando CEP"></span>' : ''}</div>${f.erroCep ? `<small class="request-field-error">${esc(f.erroCep)}</small>` : ''}</div>
+              <div class="field" style="grid-column:span 2"><label for="f-logradouro">Logradouro <span class="req">*</span></label><input id="f-logradouro" value="${esc(f.endereco.logradouro)}" placeholder="Rua, avenida..." autocomplete="address-line1" ${f.buscandoCep ? 'disabled' : ''} required></div>
+            </div>
+            <div class="field-row-3 request-field-grid">
+              <div class="field"><label for="f-numero">Número <span class="req">*</span></label><input id="f-numero" value="${esc(f.endereco.numero)}" placeholder="Nº" required></div>
+              <div class="field"><label for="f-complemento">Complemento</label><input id="f-complemento" value="${esc(f.endereco.complemento)}" placeholder="Bloco, sala..."></div>
+              <div class="field"><label for="f-bairro">Bairro</label><input id="f-bairro" value="${esc(f.endereco.bairro)}" placeholder="Bairro" autocomplete="address-level3"></div>
+            </div>
+            <div class="field-row request-field-grid">
+              <div class="field"><label for="f-cidade">Cidade <span class="req">*</span></label><input id="f-cidade" value="${esc(f.endereco.cidade)}" placeholder="Cidade" autocomplete="address-level2" required></div>
+              <div class="field"><label for="f-uf">UF <span class="req">*</span></label><input id="f-uf" value="${esc(f.endereco.uf)}" placeholder="Ex.: SP" maxlength="2" style="text-transform:uppercase" autocomplete="address-level1" required></div>
+            </div>
+          </div>
+          <div class="field request-notes-field"><label for="f-motivo">Observações <span class="dim">(opcional)</span></label><textarea id="f-motivo" rows="2" placeholder="Detalhes que ajudem a atender seu pedido...">${esc(f.motivo)}</textarea></div>
+          <div class="request-review-card"><div class="request-review-heading"><div><strong>Resumo do pedido</strong><small>Revise os materiais antes de enviar.</small></div><span class="request-review-count">${resumo.length} ${resumo.length === 1 ? 'item' : 'itens'} · ${totalQtd} un.</span></div><div class="request-review-list">${resumoHtml}</div><div class="request-review-delivery"><span>Prioridade</span><strong class="priority-${esc(f.urgencia)}">${f.urgencia === 'alta' ? 'Alta' : f.urgencia === 'baixa' ? 'Baixa' : 'Normal'}</strong><span class="request-review-separator"></span><span>Entrega</span><strong id="request-review-city">${esc([f.endereco.cidade, f.endereco.uf].filter(Boolean).join(' / ')) || 'A confirmar'}</strong></div></div>
+          <div class="request-stage-footer"><button type="button" class="secondary request-back-btn" data-back="1">← Voltar aos materiais</button><span class="request-footer-note">O estoque será atualizado após o registro.</span><button class="primary request-submit-btn" id="submit-btn" ${state.sending ? 'disabled' : ''}>${state.sending ? '<span class="request-spinner"></span> Enviando...' : 'Enviar solicitação <span>→</span>'}</button></div>
         </div>
-
-        <hr style="border:none; border-top:1px solid var(--border); margin:20px 0;">
-
-        <div class="field">
-          <label>Endereço de Entrega <span class="req">*</span></label>
-        </div>
-        <div class="field-row-3">
-          <div class="field">
-            <label>CEP <span class="req">*</span></label>
-            <input id="f-cep" value="${esc(f.endereco.cep)}" placeholder="00000-000" maxlength="9" inputmode="numeric">
-          </div>
-          <div class="field" style="grid-column: span 2;">
-            <label>Logradouro <span class="req">*</span></label>
-            <input id="f-logradouro" value="${esc(f.endereco.logradouro)}" placeholder="${f.buscandoCep ? 'Buscando endereço...' : 'Rua, Avenida...'}" ${f.buscandoCep ? 'disabled' : ''}>
-          </div>
-        </div>
-        ${f.erroCep ? `<div style="color:var(--danger); font-size:12.5px; margin:-8px 0 12px;">${f.erroCep}</div>` : ''}
-        <div class="field-row-3">
-          <div class="field">
-            <label>Número <span class="req">*</span></label>
-            <input id="f-numero" value="${esc(f.endereco.numero)}" placeholder="Nº">
-          </div>
-          <div class="field">
-            <label>Complemento</label>
-            <input id="f-complemento" value="${esc(f.endereco.complemento)}" placeholder="Bloco, apto, sala...">
-          </div>
-          <div class="field">
-            <label>Bairro</label>
-            <input id="f-bairro" value="${esc(f.endereco.bairro)}" placeholder="Bairro">
-          </div>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Cidade <span class="req">*</span></label>
-            <input id="f-cidade" value="${esc(f.endereco.cidade)}" placeholder="Cidade">
-          </div>
-          <div class="field">
-            <label>UF <span class="req">*</span></label>
-            <input id="f-uf" value="${esc(f.endereco.uf)}" placeholder="UF" maxlength="2" style="text-transform:uppercase;">
-          </div>
-        </div>
-
-        <div class="field" style="margin-top:8px;">
-          <label>Observações</label>
-          <textarea id="f-motivo" rows="2" placeholder="Alguma observação adicional sobre o pedido (opcional)...">${esc(f.motivo)}</textarea>
-        </div>
-
-        <div id="form-error-box" style="color:var(--danger); font-size:13px; margin-bottom:12px;">${state.error}</div>
-
-        <button class="primary" id="submit-btn" ${state.sending ? 'disabled' : ''}>
-          ${state.sending ? 'Processando envio...' : 'Enviar Solicitação e Atualizar Estoque'}
-        </button>
-      </div>
+        ${state.error ? `<div class="request-error" id="form-error-box" role="alert"><span>!</span>${esc(state.error)}</div>` : '<div id="form-error-box"></div>'}
+      </section>
     `);
 
-    // Abre o modal com as informações detalhadas da planilha.
-    panel.querySelector('#btn-ver-info').onclick = () => {
+    const infoBtn = panel.querySelector('#btn-ver-info');
+    if(infoBtn) infoBtn.onclick = () => {
       state.showInfoModal = true;
       renderInfoModal();
     };
-
+    panel.querySelectorAll('.request-step-btn').forEach(btn => {
+      btn.onclick = () => navegarEtapaRequisicao(btn.dataset.step);
+    });
+    panel.querySelectorAll('.request-next-btn').forEach(btn => {
+      btn.onclick = () => navegarEtapaRequisicao(btn.dataset.next);
+    });
+    panel.querySelectorAll('.request-back-btn').forEach(btn => {
+      btn.onclick = () => navegarEtapaRequisicao(btn.dataset.back);
+    });
+    const toggle = panel.querySelector('#toggle-outro');
+    if(toggle) toggle.onclick = () => {
+      state.form.usarLivre = !state.form.usarLivre;
+      state.error = '';
+      render();
+    };
     return panel;
   }
 
-  // Constrói o painel que exibe o histórico de solicitações do usuário.
+  // Mantém o histórico recolhido inicialmente para priorizar a nova solicitação.
   function buildHistoryPanel(){
     const list = state.solicitacoes;
     return elFrag(`
-      <div class="panel" id="history-panel-box">
-        <div class="panel-head">
-          <h3>Meus Pedidos (${esc(state.currentUserEmail)})</h3>
-          <button class="secondary" id="btn-export">📥 Exportar Meus Pedidos (CSV)</button>
+      <section class="panel history-panel" id="history-panel-box">
+        <div class="panel-head history-panel-head">
+          <div><h3>Meus pedidos</h3><p class="history-subtitle">${list.length} ${list.length === 1 ? 'solicitação registrada' : 'solicitações registradas'}</p></div>
+          <div class="history-actions"><button class="secondary" id="btn-export">↓ Exportar Excel</button><button class="secondary history-toggle-btn" id="btn-toggle-history" aria-expanded="${state.historyOpen ? 'true' : 'false'}">${state.historyOpen ? 'Ocultar histórico −' : 'Ver histórico +'}</button></div>
         </div>
-
-        <div id="history-table-wrapper">
+        <div id="history-table-wrapper" ${state.historyOpen ? '' : 'hidden'}>
           ${list.length === 0 ? `<div class="empty-state">Você ainda não possui solicitações registradas nesta conta.</div>` : `
-            <div style="overflow-x:auto;">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Materiais</th>
-                    <th>Qtd.</th>
-                    <th>Setor / CC</th>
-                    <th>Prioridade</th>
-                    <th>Status</th>
-                    <th>Data da Solicitação</th>
-                    <th>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${list.map(s => `
-                    <tr>
-                      <td style="font-weight:600;">${destacarSemEstoque(esc(s.item))}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
-                      <td class="mono" style="font-weight:700;">${s.quantidade}</td>
-                      <td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td>
-                      <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
-                      <td><span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span></td>
-                      <td class="dim mono" style="font-size:11px;">${fmtDate(s.dataCriacao)}</td>
-                      <td>
-                        ${s.status === 'pendente' ? `<button class="danger-btn cancel-req-btn" data-id="${s.id}">Cancelar</button>` : `<span class="dim" style="font-size:11.5px;">—</span>`}
-                      </td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          `}
+            <div class="history-table-scroll"><table><thead><tr><th>Materiais</th><th>Qtd.</th><th>Setor / CC</th><th>Prioridade</th><th>Status</th><th>Data da solicitação</th><th>Ações</th></tr></thead>
+            <tbody>${list.map(s => `
+              <tr><td class="history-material-cell">${destacarSemEstoque(esc(s.item))}${s.endereco ? `<br><small class="dim">⌖ ${esc(s.endereco)}</small>` : ''}</td><td class="mono history-quantity">${s.quantidade}</td><td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td><td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td><td><span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span></td><td class="dim mono history-date">${fmtDate(s.dataCriacao)}</td><td>${s.status === 'pendente' ? `<button class="danger-btn cancel-req-btn" data-id="${s.id}">Cancelar</button>` : `<span class="dim">—</span>`}</td></tr>
+            `).join('')}</tbody></table></div>`}
         </div>
-      </div>
+      </section>
     `);
   }
 
@@ -1268,9 +1322,16 @@
   function renderGridOnly(){
     const grid = document.getElementById('product-grid');
     if(!grid) return;
-    const filtered = state.produtos.filter(p => !state.busca || p.nome.toLowerCase().includes(state.busca.toLowerCase()) || (p.sku || '').toLowerCase().includes(state.busca.toLowerCase()));
+    const filtered = state.produtos.filter(p => {
+      const bateBusca = !state.busca || p.nome.toLowerCase().includes(state.busca.toLowerCase()) || (p.sku || '').toLowerCase().includes(state.busca.toLowerCase());
+      const categoria = (p.categoria || 'Outros').trim();
+      const bateCategoria = state.catalogCategory === 'todas' || categoria === state.catalogCategory;
+      return bateBusca && bateCategoria;
+    });
 
-    if(filtered.length === 0){ grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;">Nenhum material encontrado.</div>`; return; }
+    const resultCount = document.getElementById('catalog-results-count');
+    if(resultCount) resultCount.textContent = `${filtered.length} de ${state.produtos.length} produto(s)`;
+    if(filtered.length === 0){ grid.innerHTML = `<div class="empty-state request-empty-results" style="grid-column:1/-1;"><span>⌕</span><strong>Nenhum material encontrado</strong><small>Tente outro termo ou altere a categoria.</small></div>`; atualizarResumoSelecao(); return; }
 
     // Converte os produtos filtrados em cartões HTML individuais.
     grid.innerHTML = filtered.map(p => {
@@ -1279,7 +1340,7 @@
       const isSelected = Object.prototype.hasOwnProperty.call(state.form.itens, p.id);
       const qtd = isSelected ? state.form.itens[p.id] : 1;
       return `
-        <div class="product-card ${isSelected ? 'selected' : ''}" data-id="${p.id}">
+        <div class="product-card ${isSelected ? 'selected' : ''}" data-id="${p.id}" role="button" tabindex="0" aria-pressed="${isSelected ? 'true' : 'false'}">
           <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
             <div class="cat">${esc(p.categoria)}</div>
             ${semEstoque ? `<span style="font-size:10px; font-weight:700; color:#fff; background:var(--danger); padding:2px 7px; border-radius:10px; letter-spacing:.03em;">SEM ESTOQUE</span>` : ''}
@@ -1300,7 +1361,7 @@
     // Percorre os cartões para configurar a seleção de produtos.
     grid.querySelectorAll('.product-card').forEach(card => {
       // Alterna a seleção do produto clicado (clique fora do campo de quantidade).
-      card.onclick = () => {
+      const alternarSelecao = () => {
         const id = card.dataset.id;
         state.form.usarLivre = false;
         if(Object.prototype.hasOwnProperty.call(state.form.itens, id)){
@@ -1310,6 +1371,8 @@
         }
         renderGridOnly();
       };
+      card.onclick = (e) => { if(e.target.closest('.qtd-item-input')) return; alternarSelecao(); };
+      card.onkeydown = (e) => { if(e.target === card && (e.key === 'Enter' || e.key === ' ')){ e.preventDefault(); alternarSelecao(); } };
     });
 
     // Permite ajustar a quantidade de cada item selecionado individualmente.
@@ -1317,10 +1380,24 @@
       input.onclick = (e) => e.stopPropagation();
       input.oninput = (e) => {
         const id = input.dataset.id;
-        const val = parseInt(e.target.value) || 1;
-        state.form.itens[id] = val < 1 ? 1 : val;
+        const val = e.target.value === '' ? 0 : parseInt(e.target.value, 10);
+        state.form.itens[id] = Number.isFinite(val) ? Math.max(0, Math.min(999, val)) : 0;
+        atualizarResumoSelecao();
       };
     });
+    atualizarResumoSelecao();
+  }
+
+  function atualizarResumoSelecao(){
+    const resumo = resumoMateriaisRequisicao();
+    const totalQtd = resumo.reduce((soma, item) => soma + (Number(item.quantidade) || 0), 0);
+    document.querySelectorAll('.request-selection-copy strong').forEach(el => {
+      el.innerHTML = `<span class="selection-count">${resumo.length}</span> ${resumo.length === 1 ? 'material selecionado' : 'materiais selecionados'}`;
+    });
+    document.querySelectorAll('.selection-count').forEach(el => el.textContent = resumo.length);
+    document.querySelectorAll('.selection-units').forEach(el => el.textContent = totalQtd);
+    const stagePill = document.querySelector('.request-stage-pill');
+    if(stagePill && state.requestStep === 1) stagePill.textContent = `${resumo.length} ${resumo.length === 1 ? 'item' : 'itens'}`;
   }
 
   // Atualiza somente a tabela de histórico e os indicadores KPI.
@@ -1328,6 +1405,8 @@
     const wrapper = document.getElementById('history-table-wrapper');
     if(!wrapper) return;
     const list = state.solicitacoes;
+    const historySubtitle = document.querySelector('.history-subtitle');
+    if(historySubtitle) historySubtitle.textContent = `${list.length} ${list.length === 1 ? 'solicitação registrada' : 'solicitações registradas'}`;
 
     wrapper.innerHTML = list.length === 0 ? `<div class="empty-state">Você ainda não possui solicitações registradas nesta conta.</div>` : `
       <div style="overflow-x:auto;">
@@ -1417,7 +1496,8 @@
 
     bindFormLive('f-motivo', 'motivo');
     bindFormLive('f-item-livre', 'itemLivre');
-    bindFormLive('f-qtd-livre', 'quantidadeLivre', v => parseInt(v)||1);
+    bindFormLive('f-qtd-livre', 'quantidadeLivre', v => v === '' ? 0 : (parseInt(v, 10) || 0));
+    ['f-item-livre','f-qtd-livre'].forEach(id => { const node = content.querySelector('#'+id); if(node) node.addEventListener('input', atualizarResumoSelecao); });
 
     // Cria uma função auxiliar para os campos aninhados em state.form.endereco.
     const bindEnderecoLive = (id, key, parser) => {
@@ -1434,6 +1514,11 @@
     bindEnderecoLive('f-bairro', 'bairro');
     bindEnderecoLive('f-cidade', 'cidade');
     bindEnderecoLive('f-uf', 'uf', v => v.toUpperCase().slice(0,2));
+    const atualizarCidadeResumo = () => {
+      const alvo = document.getElementById('request-review-city');
+      if(alvo) alvo.textContent = [state.form.endereco.cidade, state.form.endereco.uf].filter(Boolean).join(' / ') || 'A confirmar';
+    };
+    ['f-cidade','f-uf'].forEach(id => { const node = content.querySelector('#'+id); if(node) node.addEventListener('input', atualizarCidadeResumo); });
 
     const cepInput = content.querySelector('#f-cep');
     if(cepInput){
@@ -1449,6 +1534,9 @@
     const urgSel = content.querySelector('#f-urgencia');
     // Atualiza a prioridade sempre que o valor do select for alterado.
     if(urgSel) urgSel.onchange = (e) => { state.form.urgencia = e.target.value; };
+
+    const filtroCategoria = content.querySelector('#filtro-categoria');
+    if(filtroCategoria) filtroCategoria.onchange = (e) => { state.catalogCategory = e.target.value; renderGridOnly(); };
 
     const busca = content.querySelector('#busca-item');
     if(busca) {
@@ -1477,6 +1565,17 @@
 
     const exportBtn = content.querySelector('#btn-export');
     if(exportBtn) exportBtn.onclick = exportarCSV;
+
+    const historyToggle = content.querySelector('#btn-toggle-history');
+    const historyWrapper = content.querySelector('#history-table-wrapper');
+    if(historyToggle && historyWrapper){
+      historyToggle.onclick = () => {
+        state.historyOpen = !state.historyOpen;
+        historyWrapper.hidden = !state.historyOpen;
+        historyToggle.textContent = state.historyOpen ? 'Ocultar histórico −' : 'Ver histórico +';
+        historyToggle.setAttribute('aria-expanded', String(state.historyOpen));
+      };
+    }
 
     // Configura novamente os botões de cancelamento presentes na tabela.
     content.querySelectorAll('.cancel-req-btn').forEach(btn => {
