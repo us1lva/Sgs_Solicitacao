@@ -833,6 +833,34 @@
 
     content.appendChild(buildFormPanel());
     content.appendChild(buildHistoryPanel());
+
+    // Navegação compacta entre solicitação e histórico, evitando uma página longa.
+    const formPanel = content.querySelector('.panel');
+    const historyPanel = content.querySelector('#history-panel-box');
+    const nav = elFrag(`
+      <nav class="workspace-tabs" aria-label="Seções do portal">
+        <button type="button" class="workspace-tab active" data-view="request">
+          <span class="workspace-tab-icon">＋</span>
+          <span><strong>Nova solicitação</strong><small>Preencher pedido</small></span>
+        </button>
+        <button type="button" class="workspace-tab" data-view="history">
+          <span class="workspace-tab-icon">▤</span>
+          <span><strong>Meus pedidos</strong><small>${state.solicitacoes.length} registro(s)</small></span>
+        </button>
+      </nav>
+    `);
+    if(formPanel && historyPanel){
+      historyPanel.hidden = true;
+      content.insertBefore(nav, formPanel);
+      nav.querySelectorAll('.workspace-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          const showHistory = tab.dataset.view === 'history';
+          formPanel.hidden = showHistory;
+          historyPanel.hidden = !showHistory;
+          nav.querySelectorAll('.workspace-tab').forEach(item => item.classList.toggle('active', item === tab));
+        });
+      });
+    }
     wireEvents(content);
   }
 
