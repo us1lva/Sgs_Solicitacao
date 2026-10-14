@@ -25,8 +25,9 @@
 
   /* Ondulação nos botões */
   document.addEventListener('pointerdown', e => {
-    const b = e.target.closest && e.target.closest('button');
+    const b = e.target.closest && e.target.closest('button, .product-card');
     if(!b || b.disabled || reduce) return;
+    if(b.classList.contains('product-card') && e.target.closest('.field')) return;
     const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height) * 2;
     const s = document.createElement('span');
     s.className = 'fx-ripple';
@@ -105,6 +106,81 @@
     });
   }
 
+  /* Cards dos itens: ícone, barra de estoque, seletor +/- e animações */
+  const seen = new Set(), stockMap = {};
+  let lastClicked = null;
+  const ICONS = [[/epi|segur|bota|luva|capacete|[óo]culos|m[áa]scara/i,'🦺'],[/unif|camis|cal[çc]a|jaleco|vest/i,'👕'],[/limp|higi/i,'🧼'],[/escrit|papel|ofic|adm/i,'📎'],[/ferram|manut/i,'🔧'],[/inform|cabo|t[ée]cn/i,'🔌']];
+  const iconFor = t => { for(const [r,i] of ICONS) if(r.test(t)) return i; return '📦'; };
+  document.addEventListener('pointerdown', e => {
+    const c = e.target.closest && e.target.closest('.product-card');
+    if(c && !e.target.closest('.field')) lastClicked = c.dataset.id;
+  }, true);
+  document.addEventListener('input', e => { if(e.target.id === 'busca-item') seen.clear(); }, true);
+
+  function sparks(card){
+    if(reduce) return;
+    for(let i = 0; i < 10; i++){
+      const s = document.createElement('i'); s.className = 'fx-spark'; s.style.setProperty('--a', (i * 36) + 'deg');
+      card.appendChild(s); setTimeout(() => s.remove(), 700);
+    }
+  }
+  function stepper(inp){
+    const st = document.createElement('div'); st.className = 'fx-stepper';
+    const mk = (t, d) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'fx-step'; b.textContent = t;
+      b.setAttribute('aria-label', d > 0 ? 'Aumentar quantidade' : 'Diminuir quantidade');
+      b.onclick = ev => {
+        ev.stopPropagation();
+        inp.value = Math.max(1, Math.min(999, (parseInt(inp.value, 10) || 1) + d));
+        inp.dispatchEvent(new Event('input', { bubbles:true }));
+        inp.classList.remove('fx-tick'); void inp.offsetWidth; inp.classList.add('fx-tick');
+      };
+      return b;
+    };
+    inp.parentNode.insertBefore(st, inp);
+    st.append(mk('−', -1), inp, mk('+', 1));
+  }
+  function enhanceCards(){
+    const all = [...document.querySelectorAll('#product-grid .product-card')];
+    const novos = all.filter(c => !c.dataset.fx);
+    if(!novos.length) return;
+    const parsed = novos.map(c => {
+      const m = (c.querySelector('.mono')?.textContent || '').match(/SKU:\s*(.*?)\s*\|\s*Estoque:\s*(-?\d+)/);
+      return m ? { sku:m[1], n:+m[2] } : { sku:'—', n:0 };
+    });
+    const max = Math.max(10, ...parsed.map(p => p.n));
+    novos.forEach((card, i) => {
+      const { sku, n } = parsed[i], id = card.dataset.id;
+      card.dataset.fx = 1;
+      card.dataset.level = n <= 0 ? 'out' : n <= 5 ? 'low' : 'ok';
+
+      const meta = card.querySelector('.mono');
+      if(meta){
+        const wrap = document.createElement('div'); wrap.className = 'fx-meta';
+        const a = document.createElement('span'); a.className = 'fx-sku'; a.textContent = 'SKU ' + sku;
+        const b = document.createElement('span'); b.className = 'fx-stock-n'; b.textContent = n <= 0 ? 'Esgotado' : n + (n === 1 ? ' unidade' : ' em estoque');
+        wrap.append(a, b);
+        const bar = document.createElement('div'); bar.className = 'fx-bar';
+        const fill = document.createElement('i'); bar.appendChild(fill);
+        meta.replaceWith(wrap, bar);
+        requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = Math.max(n > 0 ? 6 : 0, Math.min(100, n / max * 100)) + '%'; }));
+        if(id in stockMap && stockMap[id] !== n) bar.classList.add('fx-stockflash');
+      }
+      stockMap[id] = n;
+
+      const ico = document.createElement('span'); ico.className = 'fx-ico';
+      ico.textContent = iconFor((card.querySelector('.cat')?.textContent || '') + ' ' + (card.querySelector('h4')?.textContent || ''));
+      card.appendChild(ico);
+
+      if(!seen.has(id)){ seen.add(id); card.classList.add('fx-enter'); card.style.setProperty('--e', Math.min(i, 24)); }
+      if(id === lastClicked && card.classList.contains('selected')){ card.classList.add('fx-just'); sparks(card); }
+
+      const inp = card.querySelector('.qtd-item-input');
+      if(inp) stepper(inp);
+    });
+    lastClicked = null;
+  }
+
   /* Varredura a cada mudança de tela */
   let intro = false, queued = false, knownIds = null;
   function scan(){
@@ -128,6 +204,7 @@
 
     document.querySelectorAll('.modal-body tbody tr').forEach((r, i) => r.style.setProperty('--r', Math.min(i, 30)));
     addEyes();
+    enhanceCards();
     updateForm();
   }
   new MutationObserver(() => { if(!queued){ queued = true; requestAnimationFrame(scan); } })
