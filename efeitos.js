@@ -103,7 +103,7 @@
   /* Cards dos itens: ícone, barra de estoque, seletor +/- e animações */
   const seen = new Set(), stockMap = {};
   let lastClicked = null;
-  const ICONS = [[/epi|segur|bota|luva|capacete|[óo]culos|m[áa]scara/i,'🦺'],[/unif|camis|cal[çc]a|jaleco|vest/i,'👕'],[/limp|higi/i,'🧼'],[/escrit|papel|ofic|adm/i,'📎'],[/ferram|manut/i,'🔧'],[/inform|cabo|t[ée]cn/i,'🔌']];
+  const ICONS = [[/\b(bota|botina)s?\b/i,'🥾'],[/sapato/i,'👞'],[/epi|segur|bota|luva|capacete|[óo]culos|m[áa]scara/i,'🦺'],[/unif|camis|cal[çc]a|jaleco|vest/i,'👕'],[/limp|higi/i,'🧼'],[/escrit|papel|ofic|adm/i,'📎'],[/ferram|manut/i,'🔧'],[/inform|cabo|t[ée]cn/i,'🔌']];
   const iconFor = t => { for(const [r,i] of ICONS) if(r.test(t)) return i; return '📦'; };
   document.addEventListener('pointerdown', e => {
     const c = e.target.closest && e.target.closest('.product-card');
@@ -111,18 +111,6 @@
   }, true);
   document.addEventListener('input', e => { if(e.target.id === 'busca-item') seen.clear(); }, true);
 
-  const bootSVG = short => {
-    const t = short ? 38 : 8, band = short ? 50 : 30;
-    return `<svg viewBox="0 0 120 100" aria-hidden="true">
-      <ellipse class="sh" cx="66" cy="96" rx="50" ry="3.5"/>
-      <path class="up" d="M28 ${t} H60 L62 48 C63 56 74 60 88 63 C103 66 112 69 112 79 V84 H22 C24 74 28 64 28 56 Z"/>
-      <path class="cap" d="M88 63 C103 66 112 69 112 79 V84 H84 C87 76 88 70 88 63 Z"/>
-      <rect class="col" x="28" y="${t}" width="32" height="7" rx="2"/>
-      <path class="ref" d="M28 ${band} H61 V${band + 5} H28 Z"/>
-      <path class="sole" d="M18 82 H114 V90 Q114 93 111 93 H24 Q18 93 18 88 Z"/>
-      <path class="tread" d="M30 87.5 H34 M42 87.5 H46 M54 87.5 H58 M66 87.5 H70 M78 87.5 H82 M90 87.5 H94 M102 87.5 H106"/>
-    </svg>`;
-  };
   function sparks(card){
     if(reduce) return;
     for(let i = 0; i < 10; i++){
@@ -175,17 +163,9 @@
       stockMap[id] = n;
 
       const nome = card.querySelector('h4')?.textContent || '';
-      const bota = nome.match(/\b(bota|botina)s?\b/i);
-      if(bota){
-        card.dataset.boot = 1;
-        const bt = document.createElement('div'); bt.className = 'fx-boot';
-        bt.innerHTML = bootSVG(/botina/i.test(bota[0]));
-        card.appendChild(bt);
-      } else {
-        const ico = document.createElement('span'); ico.className = 'fx-ico';
-        ico.textContent = iconFor((card.querySelector('.cat')?.textContent || '') + ' ' + nome);
-        card.appendChild(ico);
-      }
+      const ico = document.createElement('span'); ico.className = 'fx-ico';
+      ico.textContent = iconFor((card.querySelector('.cat')?.textContent || '') + ' ' + nome);
+      card.appendChild(ico);
 
       if(!seen.has(id)){ seen.add(id); card.classList.add('fx-enter'); card.style.setProperty('--e', Math.min(i, 24)); }
       if(id === lastClicked && card.classList.contains('selected')){ card.classList.add('fx-just'); sparks(card); }
