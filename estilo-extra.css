@@ -24,7 +24,7 @@ body::before{
 .fx-intro{animation:fxRise .6s cubic-bezier(.16,1,.3,1) both; animation-delay:calc(var(--i,0) * 90ms);}
 
 /* ---------- Cabeçalho ---------- */
-.header-bar{backdrop-filter:blur(10px); position:sticky; top:0; z-index:50; background:color-mix(in srgb,var(--panel) 88%,transparent);}
+.header-bar{position:sticky; top:0; z-index:50;}
 .brand svg{transition:transform .4s cubic-bezier(.34,1.56,.64,1);}
 .brand:hover svg{transform:rotate(-4deg) scale(1.08);}
 .brand-badge{position:relative; overflow:hidden;}
@@ -45,6 +45,8 @@ body::before{
 
 /* ---------- Painéis e campos ---------- */
 .panel{transition:border-color .3s, box-shadow .3s;}
+.panel::before{transform:scaleX(.3); transition:transform .6s cubic-bezier(.16,1,.3,1), opacity .3s;}
+.panel:hover::before{transform:scaleX(1); opacity:1;}
 .panel:hover{border-color:color-mix(in srgb,var(--amber) 40%,var(--border)); box-shadow:0 12px 32px rgba(0,0,0,.18);}
 .field{position:relative;}
 .field:focus-within > label{color:var(--amber); transform:translateX(3px);}
@@ -158,3 +160,13 @@ button:focus-visible, .product-card:focus-visible{outline:2px solid var(--amber)
   *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important;}
   body::before{display:none;}
 }
+
+/* ---------- Extras de interação (v2) ---------- */
+.panel h3{position:relative; padding-bottom:6px;}
+.panel h3::after{content:''; position:absolute; left:0; bottom:0; height:2px; width:28px; background:var(--amber); border-radius:2px; transition:width .4s cubic-bezier(.16,1,.3,1);}
+.panel:hover h3::after{width:64px;}
+.field:focus-within input, .field:focus-within select, .field:focus-within textarea{transform:translateY(-1px);}
+.user-session-bar{transition:box-shadow .3s, transform .3s;}
+.user-session-bar:hover{transform:translateY(-2px); box-shadow:0 10px 24px rgba(26,163,240,.15);}
+.badge.pendente::before{animation:fxBadge 1.4s ease-in-out infinite;}
+.toast{border-left-color:var(--amber);}
