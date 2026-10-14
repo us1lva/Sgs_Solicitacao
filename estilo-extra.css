@@ -1,0 +1,160 @@
+/* ==========================================================
+   estilo-extra.css — camada de animação e interação
+   Carregue DEPOIS do style.css. Não altera nenhum arquivo existente.
+   ========================================================== */
+
+/* ---------- Brilho que segue o mouse ---------- */
+body::before{
+  content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+  background:radial-gradient(520px circle at var(--mx,50%) var(--my,30%), rgba(255,127,17,.10), transparent 60%);
+  transition:background .15s;
+}
+#app{position:relative; z-index:1;}
+
+/* ---------- Barra de progresso do formulário ---------- */
+#fx-progress{
+  position:fixed; top:0; left:0; height:3px; width:0; z-index:500;
+  background:linear-gradient(90deg,var(--amber),var(--steel),var(--ok));
+  box-shadow:0 0 12px rgba(255,127,17,.6);
+  transition:width .5s cubic-bezier(.16,1,.3,1), opacity .3s;
+}
+
+/* ---------- Entrada (só ao abrir o portal) ---------- */
+@keyframes fxRise{from{opacity:0; transform:translateY(22px) scale(.98);} to{opacity:1; transform:none;}}
+.fx-intro{animation:fxRise .6s cubic-bezier(.16,1,.3,1) both; animation-delay:calc(var(--i,0) * 90ms);}
+
+/* ---------- Cabeçalho ---------- */
+.header-bar{backdrop-filter:blur(10px); position:sticky; top:0; z-index:50; background:color-mix(in srgb,var(--panel) 88%,transparent);}
+.brand svg{transition:transform .4s cubic-bezier(.34,1.56,.64,1);}
+.brand:hover svg{transform:rotate(-4deg) scale(1.08);}
+.brand-badge{position:relative; overflow:hidden;}
+.brand-badge::after{content:''; position:absolute; inset:0; background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.35),transparent 70%); transform:translateX(-120%); animation:fxShine 4s ease-in-out infinite;}
+@keyframes fxShine{0%,60%{transform:translateX(-120%);} 100%{transform:translateX(120%);}}
+
+/* ---------- Avatar e sessão ---------- */
+.user-avatar{animation:fxPulseRing 2.6s ease-out infinite;}
+@keyframes fxPulseRing{0%{box-shadow:0 0 0 0 rgba(2,132,199,.55);} 70%,100%{box-shadow:0 0 0 12px rgba(2,132,199,0);}}
+
+/* ---------- KPIs ---------- */
+.kpi-card{position:relative; overflow:hidden; transition:transform .25s cubic-bezier(.34,1.56,.64,1), border-color .2s, box-shadow .25s;}
+.kpi-card::after{content:''; position:absolute; left:0; bottom:0; height:3px; width:100%; background:var(--amber); transform:scaleX(0); transform-origin:left; transition:transform .4s cubic-bezier(.16,1,.3,1);}
+.kpi-card:hover{transform:translateY(-4px); border-color:var(--amber); box-shadow:0 14px 28px rgba(0,0,0,.25);}
+.kpi-card:hover::after{transform:scaleX(1);}
+.kpi-card .val.fx-bump{animation:fxBump .45s cubic-bezier(.34,1.56,.64,1);}
+@keyframes fxBump{50%{transform:scale(1.3);}}
+
+/* ---------- Painéis e campos ---------- */
+.panel{transition:border-color .3s, box-shadow .3s;}
+.panel:hover{border-color:color-mix(in srgb,var(--amber) 40%,var(--border)); box-shadow:0 12px 32px rgba(0,0,0,.18);}
+.field{position:relative;}
+.field:focus-within > label{color:var(--amber); transform:translateX(3px);}
+label{transition:color .2s, transform .2s;}
+input.fx-filled:not(:focus), textarea.fx-filled:not(:focus){border-color:color-mix(in srgb,var(--ok) 55%,var(--border));}
+input:hover, select:hover, textarea:hover{border-color:var(--text-dim);}
+@keyframes fxShake{20%,60%{transform:translateX(-6px);} 40%,80%{transform:translateX(6px);}}
+.fx-shake{animation:fxShake .4s;}
+#form-error-box:not(:empty){background:rgba(255,63,0,.08); border:1px solid rgba(255,63,0,.3); border-radius:8px; padding:10px 14px; animation:fxShake .4s;}
+
+/* ---------- Botões ---------- */
+button{position:relative; overflow:hidden;}
+button:active:not(:disabled){transform:scale(.96);}
+button.primary::before{content:''; position:absolute; inset:0; background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.45),transparent 70%); transform:translateX(-130%); transition:transform .6s;}
+button.primary:hover:not(:disabled)::before{transform:translateX(130%);}
+button.primary:disabled{animation:fxBreath 1.2s ease-in-out infinite;}
+@keyframes fxBreath{50%{opacity:.4;}}
+.fx-ripple{position:absolute; border-radius:50%; background:rgba(255,255,255,.35); transform:scale(0); animation:fxRipple .6s ease-out forwards; pointer-events:none;}
+@keyframes fxRipple{to{transform:scale(1); opacity:0;}}
+#theme-toggle-btn:hover{border-color:var(--amber);}
+
+/* ---------- Catálogo ---------- */
+.product-grid{perspective:900px;}
+.product-card{
+  --rx:0deg; --ry:0deg;
+  transform:rotateX(var(--rx)) rotateY(var(--ry)); transform-style:preserve-3d;
+  transition:transform .15s ease-out, border-color .2s, box-shadow .25s, background .25s;
+  overflow:hidden;
+}
+.product-card:hover{transform:rotateX(var(--rx)) rotateY(var(--ry)) translateY(-3px); box-shadow:0 14px 28px rgba(0,0,0,.28);}
+.product-card::before{
+  content:''; position:absolute; inset:0; pointer-events:none; opacity:0; transition:opacity .25s;
+  background:radial-gradient(180px circle at var(--gx,50%) var(--gy,50%), rgba(255,127,17,.16), transparent 70%);
+}
+.product-card:hover::before{opacity:1;}
+.product-card.selected{animation:fxPop .4s cubic-bezier(.34,1.56,.64,1);}
+.product-card.selected::after{
+  content:'✓'; position:absolute; top:10px; right:10px; width:22px; height:22px; border-radius:50%;
+  background:var(--amber); color:#1A1300; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center;
+  animation:fxPop .4s cubic-bezier(.34,1.56,.64,1);
+}
+@keyframes fxPop{0%{transform:scale(.9);} 60%{transform:scale(1.04);} 100%{transform:scale(1);}}
+.product-card .field{animation:fxRise .3s ease-out both;}
+
+/* ---------- Tabela / histórico ---------- */
+tbody tr{transition:background .2s, transform .2s;}
+tbody tr:hover{background:rgba(255,127,17,.06);}
+tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--amber);}
+.badge.pendente{animation:fxBadge 2s ease-in-out infinite;}
+@keyframes fxBadge{50%{box-shadow:0 0 0 4px rgba(255,127,17,.14);}}
+.fx-newrow{animation:fxFlash 1.6s ease-out;}
+@keyframes fxFlash{0%{background:rgba(16,185,129,.3);} 100%{background:transparent;}}
+.empty-state{animation:fxFloat 3s ease-in-out infinite;}
+@keyframes fxFloat{50%{transform:translateY(-5px);}}
+
+/* ---------- Avisos ---------- */
+.status-banner{animation:fxSlideDown .45s cubic-bezier(.16,1,.3,1);}
+.status-banner.warning{background:rgba(255,127,17,.1); border:1px solid var(--amber); color:var(--amber);}
+.status-banner.sending{position:relative; overflow:hidden;}
+.status-banner.sending::after{content:''; position:absolute; left:0; bottom:0; height:3px; width:40%; background:var(--steel); animation:fxLoad 1.1s ease-in-out infinite;}
+@keyframes fxLoad{0%{transform:translateX(-100%);} 100%{transform:translateX(260%);}}
+@keyframes fxSlideDown{from{opacity:0; transform:translateY(-14px);} to{opacity:1; transform:none;}}
+.toast{animation:fxToast .5s cubic-bezier(.34,1.56,.64,1);}
+@keyframes fxToast{from{opacity:0; transform:translateX(60px) scale(.9);} to{opacity:1; transform:none;}}
+
+/* ---------- Login ---------- */
+.login-overlay::before,.login-overlay::after{
+  content:''; position:absolute; border-radius:50%; filter:blur(70px); opacity:.35; pointer-events:none;
+  animation:fxOrb 14s ease-in-out infinite alternate;
+}
+.login-overlay::before{width:380px; height:380px; background:var(--amber); top:10%; left:12%;}
+.login-overlay::after{width:320px; height:320px; background:var(--steel); bottom:8%; right:14%; animation-delay:-6s;}
+@keyframes fxOrb{to{transform:translate(70px,-50px) scale(1.2);}}
+.login-card{z-index:1;}
+.login-card h2{animation:fxRise .6s .1s both;}
+.fx-eye{
+  position:absolute; right:8px; width:38px; background:none !important; border:none !important; box-shadow:none !important;
+  color:var(--text-dim); cursor:pointer; font-size:16px; padding:0 !important; z-index:2;
+}
+.fx-eye:hover{color:var(--amber);}
+.login-card input[type=password].fx-has-eye, .login-card input[type=text].fx-has-eye{padding-right:46px;}
+
+/* ---------- Modal ---------- */
+.tab-btn{transition:all .2s;}
+.tab-btn:hover:not(.active){border-color:var(--amber); transform:translateY(-2px);}
+.modal-body tbody tr{animation:fxRise .3s both; animation-delay:calc(var(--r,0) * 12ms);}
+
+/* ---------- Pílula flutuante do pedido ---------- */
+#fx-cart{
+  position:fixed; left:24px; bottom:24px; z-index:200; display:flex; align-items:center; gap:10px;
+  background:var(--panel-2); border:1px solid var(--amber); color:var(--text);
+  padding:10px 18px; border-radius:999px; font-size:13px; font-weight:600; cursor:pointer;
+  box-shadow:0 10px 25px rgba(0,0,0,.4), 0 0 18px rgba(255,127,17,.25);
+  transform:translateY(90px) scale(.8); opacity:0; pointer-events:none;
+  transition:transform .45s cubic-bezier(.34,1.56,.64,1), opacity .3s;
+}
+#fx-cart.show{transform:none; opacity:1; pointer-events:auto;}
+#fx-cart.bump{animation:fxBump .4s cubic-bezier(.34,1.56,.64,1);}
+#fx-cart b{background:var(--amber); color:#1A1300; border-radius:50%; min-width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono);}
+
+/* ---------- Confete ---------- */
+.fx-confetti{
+  position:fixed; top:-12px; width:9px; height:14px; z-index:900; pointer-events:none; border-radius:2px;
+  animation:fxFall var(--d,1.8s) cubic-bezier(.3,.6,.5,1) forwards;
+}
+@keyframes fxFall{to{transform:translate(var(--x,0),105vh) rotate(var(--r,540deg)); opacity:.9;}}
+
+/* ---------- Acessibilidade ---------- */
+button:focus-visible, .product-card:focus-visible{outline:2px solid var(--amber); outline-offset:2px;}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important;}
+  body::before{display:none;}
+}
