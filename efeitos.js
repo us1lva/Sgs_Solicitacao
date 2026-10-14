@@ -5,22 +5,16 @@
   const app = document.getElementById('app');
   if(!app) return;
 
-  /* Brilho que segue o mouse + inclinação 3D dos cartões */
-  let tilted = null;
+  /* Brilho que segue o mouse (tela inteira e borda luminosa dos cards) */
   addEventListener('pointermove', e => {
     if(reduce) return;
     root.style.setProperty('--mx', e.clientX + 'px');
     root.style.setProperty('--my', e.clientY + 'px');
     const card = e.target.closest && e.target.closest('.product-card');
-    if(tilted && tilted !== card){ tilted.style.setProperty('--rx','0deg'); tilted.style.setProperty('--ry','0deg'); }
-    tilted = card;
     if(!card) return;
     const r = card.getBoundingClientRect();
-    const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
-    card.style.setProperty('--ry', ((px - .5) * 8) + 'deg');
-    card.style.setProperty('--rx', ((.5 - py) * 8) + 'deg');
-    card.style.setProperty('--gx', (px * 100) + '%');
-    card.style.setProperty('--gy', (py * 100) + '%');
+    card.style.setProperty('--gx', (e.clientX - r.left) + 'px');
+    card.style.setProperty('--gy', (e.clientY - r.top) + 'px');
   }, { passive:true });
 
   /* Ondulação nos botões */
@@ -117,6 +111,18 @@
   }, true);
   document.addEventListener('input', e => { if(e.target.id === 'busca-item') seen.clear(); }, true);
 
+  const bootSVG = short => {
+    const t = short ? 38 : 8, band = short ? 50 : 30;
+    return `<svg viewBox="0 0 120 100" aria-hidden="true">
+      <ellipse class="sh" cx="66" cy="96" rx="50" ry="3.5"/>
+      <path class="up" d="M28 ${t} H60 L62 48 C63 56 74 60 88 63 C103 66 112 69 112 79 V84 H22 C24 74 28 64 28 56 Z"/>
+      <path class="cap" d="M88 63 C103 66 112 69 112 79 V84 H84 C87 76 88 70 88 63 Z"/>
+      <rect class="col" x="28" y="${t}" width="32" height="7" rx="2"/>
+      <path class="ref" d="M28 ${band} H61 V${band + 5} H28 Z"/>
+      <path class="sole" d="M18 82 H114 V90 Q114 93 111 93 H24 Q18 93 18 88 Z"/>
+      <path class="tread" d="M30 87.5 H34 M42 87.5 H46 M54 87.5 H58 M66 87.5 H70 M78 87.5 H82 M90 87.5 H94 M102 87.5 H106"/>
+    </svg>`;
+  };
   function sparks(card){
     if(reduce) return;
     for(let i = 0; i < 10; i++){
@@ -168,9 +174,18 @@
       }
       stockMap[id] = n;
 
-      const ico = document.createElement('span'); ico.className = 'fx-ico';
-      ico.textContent = iconFor((card.querySelector('.cat')?.textContent || '') + ' ' + (card.querySelector('h4')?.textContent || ''));
-      card.appendChild(ico);
+      const nome = card.querySelector('h4')?.textContent || '';
+      const bota = nome.match(/\b(bota|botina)s?\b/i);
+      if(bota){
+        card.dataset.boot = 1;
+        const bt = document.createElement('div'); bt.className = 'fx-boot';
+        bt.innerHTML = bootSVG(/botina/i.test(bota[0]));
+        card.appendChild(bt);
+      } else {
+        const ico = document.createElement('span'); ico.className = 'fx-ico';
+        ico.textContent = iconFor((card.querySelector('.cat')?.textContent || '') + ' ' + nome);
+        card.appendChild(ico);
+      }
 
       if(!seen.has(id)){ seen.add(id); card.classList.add('fx-enter'); card.style.setProperty('--e', Math.min(i, 24)); }
       if(id === lastClicked && card.classList.contains('selected')){ card.classList.add('fx-just'); sparks(card); }
