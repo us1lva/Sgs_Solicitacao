@@ -1,525 +1,441 @@
-// IIFE: encapsula todo o código da aplicação para evitar poluir o escopo global.
+// ============================================================================
+// Conexão com o Supabase (mesmo projeto/banco usado pelo portal do colaborador).
+// ============================================================================
+const SUPABASE_URL = 'https://nstyvsaolpwpqpigqsou.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_ZOU6Hpt3lUmQVBcPKL7Wyg_mxaLxEjx';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ============================================================================
+// MELHORIAS VISUAIS — fundo animado (canvas) e microinterações.
+// Os estilos ficam no fim do style.css (seção "MELHORIAS"). Prefixo "mx-".
+// Para desligar: apague este bloco e a chamada posRender() dentro de render().
+// ============================================================================
+(function iniciarMelhorias(){
+  const reduz = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const html = document.documentElement;
+  const ondas = [];          // ondas de choque (clique)
+  let wrapBg = null;
+
+  // ---------- Fundo: manchas de luz + canvas ----------
+  function montar(){
+    if(document.querySelector('.mx-bg')) return;
+
+    // Garante a ordem de empilhamento mesmo se o CSS novo não carregar:
+    // o fundo (z-index 0) sempre fica ATRÁS do app (z-index 1).
+    const appEl = document.getElementById('app');
+    if(appEl){ appEl.style.position = 'relative'; appEl.style.zIndex = '1'; }
+
+    wrapBg = document.createElement('div');
+    wrapBg.className = 'mx-bg';
+    wrapBg.setAttribute('aria-hidden', 'true');
+    wrapBg.style.cssText = 'position:fixed;inset:0;z-index:0;pointer-events:none;';
+    wrapBg.innerHTML = '<i></i><i></i><i></i>';
+    document.body.insertBefore(wrapBg, document.body.firstChild);
+
+    // Quem prefere menos movimento fica só com as manchas estáticas.
+    if(reduz) return;
+
+    // Canvas sobre a malha de 32px do body. Tudo acontece nos cruzamentos:
+    //  - mouse ilumina linhas e nós; clique dispara uma onda de choque;
+    //  - a cada ~11s um scanner varre a tela (leitor de código de barras);
+    //  - "empilhadeiras" (AGVs) percorrem as linhas da malha deixando rastro
+    //    e um ping em alguns cruzamentos; nós piscam sozinhos.
+    const cv = document.createElement('canvas');
+    cv.id = 'mx-canvas';
+    cv.setAttribute('aria-hidden', 'true');
+    cv.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;';
+    document.body.insertBefore(cv, wrapBg.nextSibling);
+    const ctx = cv.getContext('2d');
+
+    const GAP = 32;                         // igual ao background-size do body
+    const RAIO = 190, BANDA = 90, CICLO = 11000, DUR = 3200;
+    const TRILHA = 650, ONDA_DUR = 950, ONDA_VEL = 0.5;
+    let W = 0, H = 0, ambiente = [], agvs = [], pings = [], ultimo = 0;
+    const mouse = { x: -9999, y: -9999, ax: -9999, ay: -9999, ativo: false };
+
+    function escolher(a){
+      const todas = [[1,0],[-1,0],[0,1],[0,-1]];
+      const sem_re = todas.filter(d => !((a.dx || a.dy) && d[0] === -a.dx && d[1] === -a.dy));
+      const ok = sem_re.filter(d => {
+        const nx = a.x + d[0] * GAP, ny = a.y + d[1] * GAP;
+        return nx > GAP / 2 && nx < W - GAP / 2 && ny > GAP / 2 && ny < H - GAP / 2;
+      });
+      const reto = ok.find(d => d[0] === a.dx && d[1] === a.dy);
+      const d = (reto && Math.random() < .68) ? reto : (ok[Math.floor(Math.random() * ok.length)] || sem_re[0]);
+      a.dx = d[0]; a.dy = d[1]; a.tx = a.x + a.dx * GAP; a.ty = a.y + a.dy * GAP;
+    }
+
+    function redimensionar(){
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = window.innerWidth; H = window.innerHeight;
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const cols = Math.floor(W / GAP), rows = Math.floor(H / GAP);
+      const pos = () => [(1 + Math.floor(Math.random() * (cols - 1))) * GAP + .5, (1 + Math.floor(Math.random() * (rows - 1))) * GAP + .5];
+
+      const n = Math.max(8, Math.min(22, Math.round(W * H / 90000)));
+      ambiente = [];
+      for(let i = 0; i < n; i++){
+        const p = pos();
+        ambiente.push({ x: p[0], y: p[1], fase: Math.random() * 7000, periodo: 3800 + Math.random() * 3600 });
+      }
+      const m = Math.max(3, Math.min(7, Math.round(W * H / 260000)));
+      agvs = [];
+      for(let i = 0; i < m; i++){
+        const p = pos();
+        const a = { x: p[0], y: p[1], tx: p[0], ty: p[1], dx: 0, dy: 0, v: 55 + Math.random() * 60, trilha: [] };
+        escolher(a); agvs.push(a);
+      }
+    }
+
+    function moverAgvs(t, dt){
+      for(const a of agvs){
+        let passo = a.v * dt / 1000;
+        while(passo > 0){
+          const dx = a.tx - a.x, dy = a.ty - a.y, dist = Math.abs(dx) + Math.abs(dy);
+          if(dist <= passo){
+            a.x = a.tx; a.y = a.ty; passo -= dist;
+            if(Math.random() < .4) pings.push({ x: a.x, y: a.y, t0: t });
+            escolher(a);
+          } else { a.x += Math.sign(dx) * passo; a.y += Math.sign(dy) * passo; passo = 0; }
+        }
+        a.trilha.push({ x: a.x, y: a.y, t });
+        while(a.trilha.length && t - a.trilha[0].t > TRILHA) a.trilha.shift();
+      }
+    }
+
+    function desenhar(t){
+      const dt = Math.min(ultimo ? t - ultimo : 16, 64); ultimo = t;
+      const A = html.getAttribute('data-theme') === 'light' ? '168,122,0' : '255,196,0';
+      ctx.clearRect(0, 0, W, H);
+      mouse.x += (mouse.ax - mouse.x) * 0.16;
+      mouse.y += (mouse.ay - mouse.y) * 0.16;
+      moverAgvs(t, dt);
+
+      const fase = t % CICLO;
+      const varrendo = fase < DUR;
+      const scanY = varrendo ? -BANDA + (fase / DUR) * (H + BANDA * 2) : -9999;
+
+      // Mouse: brilho suave + linhas da malha acesas em degradê.
+      if(mouse.ativo){
+        const g = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, RAIO + 40);
+        g.addColorStop(0, 'rgba(' + A + ',.10)'); g.addColorStop(1, 'rgba(' + A + ',0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(mouse.x - RAIO - 40, mouse.y - RAIO - 40, (RAIO + 40) * 2, (RAIO + 40) * 2);
+
+        const lg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, RAIO);
+        lg.addColorStop(0, 'rgba(' + A + ',.5)'); lg.addColorStop(1, 'rgba(' + A + ',0)');
+        ctx.strokeStyle = lg; ctx.lineWidth = 1; ctx.beginPath();
+        for(let c = Math.floor((mouse.x - RAIO) / GAP); c <= Math.ceil((mouse.x + RAIO) / GAP); c++){
+          const x = c * GAP + .5; ctx.moveTo(x, mouse.y - RAIO); ctx.lineTo(x, mouse.y + RAIO);
+        }
+        for(let r = Math.floor((mouse.y - RAIO) / GAP); r <= Math.ceil((mouse.y + RAIO) / GAP); r++){
+          const y = r * GAP + .5; ctx.moveTo(mouse.x - RAIO, y); ctx.lineTo(mouse.x + RAIO, y);
+        }
+        ctx.stroke();
+      }
+
+      // Scanner: faixa de luz + linha fina.
+      if(varrendo){
+        const g = ctx.createLinearGradient(0, scanY - 70, 0, scanY + 70);
+        g.addColorStop(0, 'rgba(' + A + ',0)'); g.addColorStop(.5, 'rgba(' + A + ',.09)'); g.addColorStop(1, 'rgba(' + A + ',0)');
+        ctx.fillStyle = g; ctx.fillRect(0, scanY - 70, W, 140);
+        const l = ctx.createLinearGradient(0, 0, W, 0);
+        l.addColorStop(0, 'rgba(' + A + ',0)'); l.addColorStop(.5, 'rgba(' + A + ',.6)'); l.addColorStop(1, 'rgba(' + A + ',0)');
+        ctx.fillStyle = l; ctx.fillRect(0, scanY, W, 1.5);
+      }
+
+      // Ondas de choque (clique): anel + nós acesos na passagem.
+      for(let i = ondas.length - 1; i >= 0; i--){
+        const o = ondas[i], idade = Math.max(0, t - o.t0);
+        if(idade > ONDA_DUR){ ondas.splice(i, 1); continue; }
+        o.r = idade * ONDA_VEL; o.a = 1 - idade / ONDA_DUR;
+        ctx.strokeStyle = 'rgba(' + A + ',' + (.55 * o.a).toFixed(3) + ')'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = 'rgba(' + A + ',' + (.25 * o.a).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(o.x, o.y, o.r * .72, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      // Nós (cruzamentos da malha) acesos por mouse, scanner e ondas.
+      const cols = Math.ceil(W / GAP) + 1, rows = Math.ceil(H / GAP) + 1;
+      for(let r = 0; r < rows; r++){
+        const y = r * GAP + .5;
+        const dv = varrendo ? Math.abs(y - scanY) : 9999;
+        for(let c = 0; c < cols; c++){
+          const x = c * GAP + .5;
+          let k = 0;
+          if(mouse.ativo){
+            const dx = x - mouse.x, dy = y - mouse.y, d2 = dx * dx + dy * dy;
+            if(d2 < RAIO * RAIO) k = 1 - Math.sqrt(d2) / RAIO;
+          }
+          if(dv < BANDA) k = Math.max(k, (1 - dv / BANDA) * .9);
+          for(let w = 0; w < ondas.length; w++){
+            const o = ondas[w], d = Math.abs(Math.hypot(x - o.x, y - o.y) - o.r);
+            if(d < 34) k = Math.max(k, (1 - d / 34) * o.a);
+          }
+          if(k > 0.05){
+            const s = 2 + k * 3;
+            ctx.fillStyle = 'rgba(' + A + ',' + (.25 + k * .7).toFixed(3) + ')';
+            ctx.fillRect(x - s / 2, y - s / 2, s, s);
+          }
+        }
+      }
+
+      // Nós "respirando" sozinhos: ponto + anel que se expande.
+      for(const n of ambiente){
+        const u = ((t + n.fase) % n.periodo) / n.periodo;
+        ctx.fillStyle = 'rgba(' + A + ',.45)';
+        ctx.fillRect(n.x - 1.5, n.y - 1.5, 3, 3);
+        ctx.strokeStyle = 'rgba(' + A + ',' + (.38 * (1 - u)).toFixed(3) + ')';
+        ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(n.x, n.y, 3 + u * 16, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      // Pings das chegadas das empilhadeiras.
+      for(let i = pings.length - 1; i >= 0; i--){
+        const p = pings[i], u = Math.max(0, t - p.t0) / 700;
+        if(u >= 1){ pings.splice(i, 1); continue; }
+        ctx.strokeStyle = 'rgba(' + A + ',' + (.5 * (1 - u)).toFixed(3) + ')'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3 + u * 14, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      // Empilhadeiras: rastro que some + cabeça com halo.
+      for(const a of agvs){
+        const tr = a.trilha;
+        ctx.lineWidth = 2; ctx.lineCap = 'round';
+        for(let i = 1; i < tr.length; i++){
+          const idade = (t - tr[i].t) / TRILHA;
+          ctx.strokeStyle = 'rgba(' + A + ',' + (.55 * (1 - idade)).toFixed(3) + ')';
+          ctx.beginPath(); ctx.moveTo(tr[i - 1].x, tr[i - 1].y); ctx.lineTo(tr[i].x, tr[i].y); ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(' + A + ',.16)'; ctx.fillRect(a.x - 7, a.y - 7, 14, 14);
+        ctx.fillStyle = 'rgba(' + A + ',.95)'; ctx.fillRect(a.x - 2.5, a.y - 2.5, 5, 5);
+      }
+    }
+
+    // Desempenho adaptativo: mede o ritmo real dos quadros e, se a máquina não
+    // aguentar, desliga primeiro o que é decorativo (modo leve) e, em último
+    // caso, o canvas. Em PCs bons nada disso é acionado.
+    let nivel = 0, rafAnt = 0, amostra = [], inicio = 0, ultimoDesenho = 0, parou = false;
+    function laco(t){
+      if(parou) return;
+      requestAnimationFrame(laco);
+      if(!inicio) inicio = t;
+      if(rafAnt && t - inicio > 2000 && nivel < 2){
+        amostra.push(t - rafAnt);
+        if(amostra.length >= 90){
+          const media = amostra.reduce((a, b) => a + b, 0) / amostra.length;
+          amostra = [];
+          if(media > 34 && nivel === 0){ nivel = 1; html.classList.add('mx-lite'); inicio = t - 1000; }
+          else if(media > 45 && nivel === 1){
+            nivel = 2; parou = true; cv.remove();
+            return;
+          }
+        }
+      }
+      rafAnt = t;
+      const intervalo = nivel === 0 ? 24 : 48;     // ~40 fps / ~20 fps
+      if(t - ultimoDesenho < intervalo) return;
+      ultimoDesenho = t;
+      desenhar(t);
+    }
+
+    window.addEventListener('resize', redimensionar);
+    redimensionar();
+    window.addEventListener('pointermove', e => {
+      if(e.pointerType === 'touch') return;
+      mouse.ax = e.clientX; mouse.ay = e.clientY;
+      if(!mouse.ativo){ mouse.x = e.clientX; mouse.y = e.clientY; mouse.ativo = true; }
+      wrapBg.style.setProperty('--px', ((e.clientX / W) * 2 - 1).toFixed(3));
+      wrapBg.style.setProperty('--py', ((e.clientY / H) * 2 - 1).toFixed(3));
+    }, { passive: true });
+    html.addEventListener('mouseleave', () => { mouse.ativo = false; });
+    requestAnimationFrame(laco);
+  }
+
+  // ---------- Cards: foco de luz + textos em camadas ----------
+  document.addEventListener('pointermove', e => {
+    const card = e.target.closest && e.target.closest('.stat-card');
+    if(!card || e.pointerType === 'touch') return;
+    const r = card.getBoundingClientRect();
+    card.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+    card.style.setProperty('--my', (e.clientY - r.top) + 'px');
+    if(!reduz){
+      card.style.setProperty('--cx', (((e.clientX - r.left) / r.width) * 2 - 1).toFixed(3));
+      card.style.setProperty('--cy', (((e.clientY - r.top) / r.height) * 2 - 1).toFixed(3));
+    }
+  }, { passive: true });
+  document.addEventListener('pointerout', e => {
+    const card = e.target.closest && e.target.closest('.stat-card');
+    if(card && !card.contains(e.relatedTarget)){ card.style.setProperty('--cx', 0); card.style.setProperty('--cy', 0); }
+  });
+
+  // ---------- Login: card inclina levemente acompanhando o mouse ----------
+  document.addEventListener('pointermove', e => {
+    if(reduz || e.pointerType === 'touch') return;
+    const box = document.querySelector('#app .login-box');
+    if(!box) return;
+    box.style.setProperty('--ry', (((e.clientX / window.innerWidth) - .5) * 7).toFixed(2) + 'deg');
+    box.style.setProperty('--rx', (((e.clientY / window.innerHeight) - .5) * -6).toFixed(2) + 'deg');
+  }, { passive: true });
+
+  // ---------- Botões primários magnéticos ----------
+  let magRaf = 0, magX = 0, magY = 0;
+  function magnetizar(){
+    magRaf = 0;
+    document.querySelectorAll('#app button.primary:not(:disabled)').forEach(b => {
+      const r = b.getBoundingClientRect();
+      const dx = magX - (r.left + r.width / 2), dy = magY - (r.top + r.height / 2);
+      const d = Math.hypot(dx, dy), alc = Math.max(r.width, r.height) * .9 + 30;
+      if(d < alc){ const f = 1 - d / alc; b.style.translate = (dx * .16 * f).toFixed(1) + 'px ' + (dy * .22 * f).toFixed(1) + 'px'; }
+      else if(b.style.translate) b.style.translate = '';
+    });
+  }
+  document.addEventListener('pointermove', e => {
+    if(reduz || e.pointerType === 'touch') return;
+    magX = e.clientX; magY = e.clientY;
+    if(!magRaf) magRaf = requestAnimationFrame(magnetizar);
+  }, { passive: true });
+
+  // ---------- Cliques: onda de choque, onda no botão e faíscas ----------
+  function faiscas(x, y){
+    const cores = ['#FFC400', '#FFE066', '#ffffff'];
+    for(let i = 0; i < 12; i++){
+      const s = document.createElement('i');
+      const ang = Math.random() * Math.PI * 2, dist = 28 + Math.random() * 40;
+      s.className = 'mx-spark';
+      s.style.cssText = 'left:' + x + 'px;top:' + y + 'px;--dx:' + (Math.cos(ang) * dist).toFixed(1) + 'px;--dy:' + (Math.sin(ang) * dist).toFixed(1) + 'px;background:' + cores[i % 3];
+      document.body.appendChild(s);
+      setTimeout(() => s.remove(), 850);
+    }
+  }
+  document.addEventListener('pointerdown', e => {
+    if(reduz) return;
+    if(e.pointerType !== 'touch' || true) ondas.push({ x: e.clientX, y: e.clientY, t0: performance.now(), r: 0, a: 1 });
+    if(ondas.length > 4) ondas.shift();
+    const b = e.target.closest && e.target.closest('#app button.primary, #app button.secondary, #app button.icon-btn, #app button.status-tab-btn');
+    if(!b || b.disabled) return;
+    const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height) * 2;
+    const s = document.createElement('span');
+    s.className = 'mx-ripple';
+    s.style.cssText = 'width:' + d + 'px;height:' + d + 'px;left:' + (e.clientX - r.left - d / 2) + 'px;top:' + (e.clientY - r.top - d / 2) + 'px';
+    b.appendChild(s);
+    setTimeout(() => s.remove(), 650);
+    if(b.classList.contains('primary')) faiscas(e.clientX, e.clientY);
+  });
+
+  // ---------- Troca de tema: círculo que se expande a partir do botão ----------
+  window.mxTransicaoTema = function(ev, aplicar){
+    if(reduz || !document.startViewTransition || !ev){ aplicar(); return; }
+    const x = ev.clientX, y = ev.clientY;
+    const raio = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+    const vt = document.startViewTransition(aplicar);
+    vt.ready.then(() => {
+      html.animate(
+        { clipPath: ['circle(0px at ' + x + 'px ' + y + 'px)', 'circle(' + raio + 'px at ' + x + 'px ' + y + 'px)'] },
+        { duration: 750, easing: 'cubic-bezier(.65,0,.35,1)', pseudoElement: '::view-transition-new(root)' }
+      );
+    }).catch(() => {});
+  };
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', montar);
+  else montar();
+})();
+
 (function(){
   const app = document.getElementById('app');
-  const EMAIL_RESPONSAVEL = 'yuri.silva1@sgs.com';
 
   let state = {
     loaded: false,
-    authMode: 'login', // 'login', 'signup' ou 'recuperar'
+    session: null,
+    isAdmin: null, // null = ainda não verificado, true/false = verificado
+    authMode: 'login',
     authError: '',
     authConfirmMsg: '',
     authSending: false,
-    recuperandoSenha: false, // true quando o usuário chegou aqui via link de recuperação de senha
+    recuperandoSenha: false,
     novaSenhaError: '',
-    session: null,
-    currentUserEmail: '',
+    tab: 'dashboard',
     theme: localStorage.getItem('app_theme') || 'dark',
-    userProfile: { nome: '', matricula: '', setor: '', centroCusto: '' },
-    solicitacoes: [],
-    produtos: [],
-    form: {
-      itens: {},          // { produtoId: quantidade } — quantidade individual por item selecionado
-      itemLivre: '', usarLivre: false, quantidadeLivre: 1,
-      urgencia: 'normal', motivo: '',
-      endereco: { cep: '', logradouro: '', bairro: '', cidade: '', uf: '', numero: '', complemento: '' },
-      buscandoCep: false, erroCep: ''
-    },
-    busca: '',
-    error: '',
-    sending: false,
-    lastStatus: null,
-    toast: null,
-    showInfoModal: false,
-    activeTab: 'epis'
+    produtos: [], solicitacoes: [], logs: [], emailControle: '',
+    buscaProduto: '', filtroCategoria: 'todas', buscaSolicitacao: '', filtroStatus: 'todos', ordenacao: 'recentes',
+    modal: null, toast: null, sidebarAberta: false,
   };
 
   document.documentElement.setAttribute('data-theme', state.theme);
 
-  const PLANILHA_ABAS_DADOS = {
-    epis: {
-      headers: ["Codigo Boss", "descrição", "Tamanho", "CA"],
-      rows: [
-        ["P21316", "Bota segurança PVC preta cano médio biqueira composite", 38, '30536'],
-        ["P21317", "Bota segurança PVC preta cano médio biqueira composite", 39, '30536'],
-        ["P21318", "Bota segurança PVC preta cano médio biqueira composite", 40, '30536'],
-        ["P21319", "Bota segurança PVC preta cano médio biqueira composite", 41, '30536'],
-        ["P21320", "Bota segurança PVC preta cano médio biqueira composite", 42, '30536'],
-        ["P21321", "Bota segurança PVC preta cano médio biqueira composite", 43, '30536'],
-        ["P20592", "Bota segurança PVC preta cano médio biqueira composite", "44/45", '30536'],
-        ["P21054", "Botina segurança borracha preta solado PU biqueira composite", 34, '47459'],
-        ["P21027", "Botina segurança borracha preta solado PU biqueira composite", 35, '47459'],
-        ["P21028", "Botina segurança borracha preta solado PU biqueira composite", 36, '47459'],
-        ["P21029", "Botina segurança borracha preta solado PU biqueira composite", 37, '47459'],
-        ["P21030", "Botina segurança borracha preta solado PU biqueira composite", 38, '47459'],
-        ["P21031", "Botina segurança borracha preta solado PU biqueira composite", 39, '47459'],
-        ["P21032", "Botina segurança borracha preta solado PU biqueira composite", 40, '47459'],
-        ["P21033", "Botina segurança borracha preta solado PU biqueira composite", 41, '47459'],
-        ["P21034", "Botina segurança borracha preta solado PU biqueira composite", 42, '47459'],
-        ["P21035", "Botina segurança borracha preta solado PU biqueira composite", 43, '47459'],
-        ["P21036", "Botina segurança borracha preta solado PU biqueira composite", 44, '47459'],
-        ["P21037", "Botina segurança borracha preta solado PU biqueira composite", 45, '47459'],
-        ["P21038", "Botina segurança borracha preta solado PU biqueira composite", 46, '47459'],
-        ["P20127", "Capa de chuva PVC amarela com capuz", "M", "-"],
-        ["P20140", "Capa de chuva PVC amarela com capuz", "G", "-"],
-        ["P20126", "Capa de chuva PVC amarela com capuz", "GG", "-"],
-        ["P21100", "Capacete segurança branco com carneira e jugular", "Único", "8304"],
-        ["P21502", "Carneira com jugular (somente carneira)", "Único", "-"],
-        ["P21310", "Luva nitrílica descartável azul", "P", "42711"],
-        ["P21311", "Luva nitrílica descartável azul", "M", "42711"],
-        ["P21312", "Luva nitrílica descartável azul", "G", "42711"],
-        ["P21313", "Luva nitrílica descartável azul", "GG", "42711"],
-        ["P21084", "Luva vaqueta branca palma áspera", "G", "18886"],
-        ["P21282", "Luva multitato PU preta", "Tam. 10", "37168"],
-        ["P20666", "Luva nitrílica verde punho longo", "G", "31369"],
-        ["P20135", "Luva PVC verde punho 36 cm", "G", "40304"],
-        ["P21285", "Luva serviço leve malha tricotada", "G", "19435"],
-        ["P20643", "Colete tipo jaleco laranja refletivo", "Único", "-"],
-        ["P21360", "Macacão Tychem SL127T amarelo", "M", "38647"],
-        ["P20613", "Macacão Tychem SL127T amarelo", "G", "38647"],
-        ["P20614", "Macacão Tychem SL127T amarelo", "GG", "38647"],
-        ["P20273", "Máscara PFF2 descartável", "Único", "41514"],
-        ["P21257", "Máscara respiradora semi-facial", "P", "4115"],
-        ["P21258", "Máscara respiradora semi-facial", "M", "4115"],
-        ["P20598", "Máscara respiradora semi-facial", "G", "4115"],
-        ["P20131", "Máscara respiradora facial total", "G", "7298"],
-        ["P20134", "Filtro químico 3M 6003", "Par", "Solicitar em par"],
-        ["P20163", "Óculos ampla visão antiembaçante", "Único", "19072"],
-        ["P20506", "Óculos lente fumê", "Único", "20710"],
-        ["P20130", "Óculos lente incolor", "Único", "11268"],
-        ["P21357", "Óculos sobrepor incolor", "Único", "16113"],
-        ["P20110", "Perneira couro sintético preta", "Único", "35222"],
-        ["P20668", "Protetor solar FPS 30", "Frasco 120 ml", "-"],
-        ["P20001", "Protetor auditivo plug silicone", "Único / 18 dB", "5745"],
-        ["P20002", "Protetor auditivo arco concha", "Único / 20 dB", "15624 / 27971"],
-        ["P19816", "Kit abafador p/ capacete MSA XLS", "20 dB", "15624 / 27971"],
-        ["P21322", "Sapato de couro preto biqueira composite", 34, "45803"],
-        ["P21323", "Sapato de couro preto biqueira composite", 35, "45803"],
-        ["P21324", "Sapato de couro preto biqueira composite", 36, "45803"],
-        ["P21325", "Sapato de couro preto biqueira composite", 37, "45803"],
-        ["P21326", "Sapato de couro preto biqueira composite", 38, "45803"],
-        ["P21327", "Sapato de couro preto biqueira composite", 39, "45803"],
-        ["P21328", "Sapato de couro preto biqueira composite", 40, "45803"],
-        ["P21329", "Sapato de couro preto biqueira composite", 41, "45803"],
-        ["P21330", "Sapato de couro preto biqueira composite", 42, "45803"],
-        ["P21331", "Sapato de couro preto biqueira composite", 43, "45803"],
-        ["P21332", "Sapato de couro preto biqueira composite", 44, "45803"],
-        ["P21333", "Sapato de couro preto biqueira composite", 45, "45803"],
-        ["P21334", "Sapato de couro preto biqueira composite", 46, "45803"]
-      ]
-    },
-    adm: {
-      headers: ["Código", "Descrição", "Tamanho"],
-      rows: [
-        ["P30479", "Camisa Polo Feminina Algodão Azul Marinho com Laranja Manga Curta", "P"],
-        ["P30480", "Camisa Polo Feminina Algodão Azul Marinho com Laranja Manga Curta", "M"],
-        ["P30481", "Camisa Polo Feminina Algodão Azul Marinho com Laranja Manga Curta", "G"],
-        ["P30482", "Camisa Polo Feminina Algodão Azul Marinho com Laranja Manga Curta", "GG"],
-        ["P20101", "Camisa Polo Feminina Algodão/Poliéster Preta Manga Curta", "XG"],
-        ["P20046", "Camisa Social Feminina Branca Manga Longa Logo SGS", "P"],
-        ["P20050", "Camisa Social Feminina Branca Manga Longa Logo SGS", "M"],
-        ["P20052", "Camisa Social Feminina Branca Manga Longa Logo SGS", "G"],
-        ["P20054", "Camisa Social Feminina Branca Manga Longa Logo SGS", "GG"],
-        ["P20211", "Camisa Social Feminina Branca Manga Longa Logo SGS", "XG"],
-        ["P20446", "Camisa Social Feminina Semprigual Cinza Manga Curta Botão", "P"],
-        ["P20447", "Camisa Social Feminina Semprigual Cinza Manga Curta Botão", "M"],
-        ["P20448", "Camisa Social Feminina Semprigual Cinza Manga Curta Botão", "G"],
-        ["P20449", "Camisa Social Feminina Semprigual Cinza Manga Curta Botão", "GG"],
-        ["P21343", "Camisa Social Feminina Semprigual Cinza Manga Curta Botão", "XG"],
-        ["P30490", "Camisa Social Jeans Azul Feminina Manga Longa", "P"],
-        ["P30491", "Camisa Social Jeans Azul Feminina Manga Longa", "M"],
-        ["P30492", "Camisa Social Jeans Azul Feminina Manga Longa", "G"],
-        ["P30493", "Camisa Social Jeans Azul Feminina Manga Longa", "GG"],
-        ["P30484", "Camisa Polo Masculina Algodão Azul Marinho com Laranja", "P"],
-        ["P30485", "Camisa Polo Masculina Algodão Azul Marinho com Laranja", "M"],
-        ["P30486", "Camisa Polo Masculina Algodão Azul Marinho com Laranja", "G"],
-        ["P30487", "Camisa Polo Masculina Algodão Azul Marinho com Laranja", "GG"],
-        ["P20841", "Camisa Polo Masculina Algodão Cinza Manga Curta", "XG"],
-        ["P30489", "Camisa Polo Masculina Algodão Azul Marinho com Laranja", "XXG"],
-        ["P20875", "Camisa Social Masculina Natural Blend Branca Manga Longa Botão", "P"],
-        ["P20888", "Camisa Social Masculina Semprigual Cinza Manga Curta Botão", "P"],
-        ["P20889", "Camisa Social Masculina Semprigual Cinza Manga Curta Botão", "M"],
-        ["P20890", "Camisa Social Masculina Semprigual Cinza Manga Curta Botão", "G"],
-        ["P20891", "Camisa Social Masculina Semprigual Cinza Manga Curta Botão", "GG"],
-        ["P20028", "Camisa Social Masculina Semprigual Cinza Manga Longa Botão", "P"],
-        ["P20886", "Camisa Social Masculina Semprigual Cinza Manga Longa Botão", "XG"],
-        ["P30496", "Camisa Social Jeans Azul Masculina Manga Longa", "M"],
-        ["P30497", "Camisa Social Jeans Azul Masculina Manga Longa", "G"],
-        ["P30498", "Camisa Social Jeans Azul Masculina Manga Longa", "GG"],
-        ["P30500", "Camisa Social Jeans Azul Masculina Manga Longa", "XXG"]
-      ]
-    },
-    operacao: {
-      headers: ["Código", "Descrição", "Tamanho"],
-      rows: [
-        ["P21371", "Calça Proteção Feminina Cinza Antiácido com Faixa Refletiva", "P"],
-        ["P21372", "Calça Proteção Feminina Cinza Antiácido com Faixa Refletiva", "M"],
-        ["P21373", "Calça Proteção Feminina Cinza Antiácido com Faixa Refletiva", "G"],
-        ["P21374", "Calça Proteção Feminina Cinza Antiácido com Faixa Refletiva", "GG"],
-        ["P21375", "Calça Proteção Feminina Cinza Antiácido com Faixa Refletiva", "XG"],
-        ["P21366", "Camisa Proteção Masculina Cinza Antiácido com Faixa Refletiva", "P"],
-        ["P21367", "Camisa Proteção Masculina Cinza Antiácido com Faixa Refletiva", "M"],
-        ["P21368", "Camisa Proteção Masculina Cinza Antiácido com Faixa Refletiva", "G"],
-        ["P21369", "Camisa Proteção Masculina Cinza Antiácido com Faixa Refletiva", "GG"],
-        ["P21370", "Camisa Proteção Masculina Cinza Antiácido com Faixa Refletiva", "XG"],
-        ["P21361", "Calça Proteção Masculina Cinza Antiácido com Faixa Refletiva", "P"],
-        ["P21362", "Calça Proteção Masculina Cinza Antiácido com Faixa Refletiva", "M"],
-        ["P21363", "Calça Proteção Masculina Cinza Antiácido com Faixa Refletiva", "G"],
-        ["P21364", "Calça Proteção Masculina Cinza Antiácido com Faixa Refletiva", "GG"],
-        ["P21365", "Calça Proteção Masculina Cinza Antiácido com Faixa Refletiva", "XG"],
-        ["P21261", "Jaleco Branco Antiácido com Velcro", "PP"],
-        ["P21254", "Jaleco Branco Antiácido com Velcro", "P"],
-        ["P21344", "Jaleco Branco Antiácido com Velcro", "M"],
-        ["P21345", "Jaleco Branco Antiácido com Velcro", "G"],
-        ["P21346", "Jaleco Branco Antiácido com Velcro", "GG"],
-        ["P30838", "Jaleco Branco Antiácido com Velcro", "XG"],
-        ["P20396", "Camisa Operacional Masculina Cinza Manga Longa Botão com Faixa Refletiva", "GG"],
-        ["P21170", "Camisa Operacional Masculina Cinza Manga Longa Botão com Faixa Refletiva", "XG"],
-        ["P20398", "Camisa Operacional Masculina Cinza Manga Longa Velcro com Faixa Refletiva", "P"],
-        ["P20399", "Camisa Operacional Masculina Cinza Manga Longa Velcro com Faixa Refletiva", "M"],
-        ["P20400", "Camisa Operacional Masculina Cinza Manga Longa Velcro com Faixa Refletiva", "G"],
-        ["P20401", "Camisa Operacional Masculina Cinza Manga Longa Velcro com Faixa Refletiva", "GG"],
-        ["P21224", "Camisa Operacional Masculina Cinza Manga Longa Velcro com Faixa Refletiva", "XG"],
-        ["P20520", "Camisa Operacional Masculina Cinza Manga Longa Velcro com Faixa Refletiva", "XXG"],
-        ["P20382", "Calça Operacional Masculina Cinza com Faixa Refletiva", "P"],
-        ["P20383", "Calça Operacional Masculina Cinza com Faixa Refletiva", "M"],
-        ["P20384", "Calça Operacional Masculina Cinza com Faixa Refletiva", "G"],
-        ["P20385", "Calça Operacional Masculina Cinza com Faixa Refletiva", "GG"],
-        ["P20386", "Calça Operacional Masculina Cinza com Faixa Refletiva", "XG"],
-        ["P20521", "Calça Operacional Masculina Cinza com Faixa Refletiva", "XXG"],
-        ["P30448", "Camiseta Operacional Algodão Cinza Manga Curta com Faixa Refletiva", "P"],
-        ["P30449", "Camiseta Operacional Algodão Cinza Manga Curta com Faixa Refletiva", "M"],
-        ["P30450", "Camiseta Operacional Algodão Cinza Manga Curta com Faixa Refletiva", "G"],
-        ["P30451", "Camiseta Operacional Algodão Cinza Manga Curta com Faixa Refletiva", "GG"],
-        ["P30452", "Camiseta Operacional Algodão Cinza Manga Curta com Faixa Refletiva", "XG"],
-        ["P30453", "Camiseta Operacional Algodão Cinza Manga Curta com Faixa Refletiva", "XXG"],
-        ["P20404", "Jaqueta Poliamida Cinza Gola Normal Zíper com Faixa Refletiva", "P"],
-        ["P20405", "Jaqueta Poliamida Cinza Gola Normal Zíper com Faixa Refletiva", "M"],
-        ["P20554", "Jaqueta Poliamida Cinza Gola Normal Zíper com Faixa Refletiva", "G"],
-        ["P20406", "Jaqueta Poliamida Cinza Gola Normal Zíper com Faixa Refletiva", "GG"],
-        ["P20403", "Jaqueta Poliamida Cinza Gola Normal Zíper com Faixa Refletiva", "XG"]
-      ]
-    }
-  };
+  function fmtDate(iso){ const d=new Date(iso); return isNaN(d.getTime()) ? iso : d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
+  function fmtMoney(v){ return (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 
-  // Formata uma data ISO para o padrão brasileiro com data e hora.
-  function fmtDate(iso){ const d=new Date(iso); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
-  // Valida se um texto possui o formato básico de um endereço de e-mail.
+  // Mostra os materiais de um pedido um por linha (nome ×quantidade), em vez do
+  // texto corrido salvo no campo "item". Cai de volta pro texto corrido quando
+  // não há itens de catálogo vinculados (caso de item personalizado). Itens sem
+  // estoque no momento do pedido aparecem destacados em vermelho, com aviso de
+  // compra urgente.
+  function formatarMateriaisCompacto(s){
+    if(s.itens && s.itens.length > 0){
+      return s.itens.map(it => {
+        const semEstoque = it.disponivel === false;
+        const texto = `${esc(it.nome)} <span class="dim mono">×${it.quantidade}</span>`;
+        return semEstoque
+          ? `<span style="color:var(--danger); font-weight:600;">🔴 ${texto} — sem estoque</span>`
+          : texto;
+      }).join('<br>');
+    }
+    return esc(s.item);
+  }
+  function elFrag(html){ const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+
+  // Escapa texto antes de inserir no HTML. Este painel exibe dados enviados por
+  // COLABORADORES (não confiáveis) na tela do ADMIN — todo campo de texto livre
+  // (nome, motivo, endereço, item, fornecedor...) precisa passar por aqui antes
+  // de entrar em um template de innerHTML, ou vira um vetor de XSS armazenado.
+  function esc(v){
+    if(v === null || v === undefined) return '';
+    return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
   function isValidEmail(v){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
-  // Exibe uma mensagem temporária de aviso na interface.
-  function showToast(msg){ state.toast=msg; render(); setTimeout(()=>{state.toast=null; render();}, 4000); }
 
-  // Junta os campos do endereço num único texto legível para salvar no pedido.
-  function montarEnderecoTexto(e){
-    const partes = [];
-    let linha1 = e.logradouro || '';
-    if(e.numero) linha1 += (linha1 ? ', ' : '') + e.numero;
-    if(linha1) partes.push(linha1);
-    if(e.complemento) partes.push(e.complemento);
-    if(e.bairro) partes.push(e.bairro);
-    const cidadeUf = [e.cidade, e.uf].filter(Boolean).join('/');
-    if(cidadeUf) partes.push(cidadeUf);
-    if(e.cep) partes.push('CEP ' + e.cep);
-    return partes.join(' - ');
+  function buildMailto(email, subject, body){
+    return `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }
 
-  // Verifica se há o mínimo de informação para considerar o endereço preenchido.
-  function enderecoValido(e){
-    return !!(e.cep && e.logradouro && e.numero && e.cidade && e.uf);
+  function showToast(msg){ state.toast=msg; render(); setTimeout(()=>{state.toast=null; render();},3000); }
+
+  function exportarCSV(dados, nomeArquivo){
+    if(!dados || !dados.length){ showToast('Nenhum dado para exportar.'); return; }
+    const headers = Object.keys(dados[0]).join(',');
+    const rows = dados.map(obj => Object.values(obj).map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers, ...rows].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `${nomeArquivo}_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast(`Relatório ${nomeArquivo}.csv baixado com sucesso!`);
   }
 
-  // Consulta o ViaCEP e preenche automaticamente logradouro/bairro/cidade/UF.
-  async function buscarCep(cepDigitado){
-    const cep = (cepDigitado || '').replace(/\D/g, '');
-    state.form.endereco.cep = cep;
-    state.erroCep = '';
-
-    if(cep.length !== 8){
-      state.erroCep = cep.length > 0 ? 'CEP deve ter 8 dígitos.' : '';
-      render();
-      return;
-    }
-
-    state.buscandoCep = true;
-    render();
-
-    try {
-      const resp = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
-      const data = await resp.json();
-      if(data.erro){
-        state.erroCep = 'CEP não encontrado.';
-      } else {
-        state.form.endereco.logradouro = data.logradouro || '';
-        state.form.endereco.bairro = data.bairro || '';
-        state.form.endereco.cidade = data.localidade || '';
-        state.form.endereco.uf = data.uf || '';
-        state.form.endereco.cep = (data.cep || cep).replace(/\D/g, '').replace(/(\d{5})(\d{3})/, '$1-$2');
-      }
-    } catch (err) {
-      state.erroCep = 'Não foi possível consultar o CEP agora. Preencha manualmente.';
-    } finally {
-      state.buscandoCep = false;
-      render();
-    }
-  }
-
-  // ==========================================================================
-  // Sessão / dados: tudo o que antes vinha do localStorage agora vem do Supabase.
-  // ==========================================================================
-
-  let debounceSalvarPerfil = null;
-  let realtimeSubscribed = false;
-
-  // Carrega perfil, catálogo e histórico do usuário autenticado no Supabase.
-  async function bootstrapSessao(){
-    state.currentUserEmail = state.session.user.email;
-
-    const usuario = await window.db.getUsuarioAtual(state.session.user.id);
-    state.userProfile = usuario ? {
-      nome: usuario.nome || '',
-      matricula: usuario.matricula || '',
-      setor: usuario.setor || '',
-      centroCusto: usuario.centro_custo || ''
-    } : { nome: '', matricula: '', setor: '', centroCusto: '' };
-    state.usuarioId = usuario ? usuario.id : null;
-
-    const [produtos, solicitacoes] = await Promise.all([
-      window.db.listarProdutos(),
-      state.usuarioId ? window.db.listarSolicitacoes(state.usuarioId) : Promise.resolve([])
-    ]);
-    state.produtos = produtos;
-    state.solicitacoes = solicitacoes;
-  }
-
-  function limparSessao(){
-    state.currentUserEmail = '';
-    state.usuarioId = null;
-    state.userProfile = { nome: '', matricula: '', setor: '', centroCusto: '' };
-    state.solicitacoes = [];
-    state.form = {
-      itens: {}, itemLivre: '', usarLivre: false, quantidadeLivre: 1,
-      urgencia: 'normal', motivo: '',
-      endereco: { cep: '', logradouro: '', bairro: '', cidade: '', uf: '', numero: '', complemento: '' },
-      buscandoCep: false, erroCep: ''
-    };
-  }
-
-  // Assina alterações em tempo real: estoque global e as próprias solicitações.
-  function garantirRealtime(){
-    if(realtimeSubscribed) return;
-    realtimeSubscribed = true;
-
-    window.db.subscribeProdutos(async () => {
-      state.produtos = await window.db.listarProdutos();
-      renderGridOnly();
-    });
-
-    window.db.subscribeSolicitacoes(async () => {
-      if(!state.usuarioId) return;
-      state.solicitacoes = await window.db.listarSolicitacoes(state.usuarioId);
-      renderHistoryOnly();
-    });
-  }
-
-  // Inicializa a aplicação: verifica sessão existente e escuta mudanças de login/logout.
-  async function loadAll(){
-    state.session = await window.db.getSession();
-    if(state.session){
-      await bootstrapSessao();
-    }
-    state.loaded = true;
-    garantirRealtime();
-    render();
-
-    window.db.onAuthStateChange(async (session, event) => {
-      if(event === 'PASSWORD_RECOVERY'){
-        // Usuário clicou no link do e-mail: mostra a tela de "definir nova senha"
-        // em vez de deixá-lo entrar direto no app com essa sessão temporária.
-        state.session = session;
-        state.recuperandoSenha = true;
-        render();
-        return;
-      }
-      const tinhaSessao = !!state.session;
-      state.session = session;
-      if(session && !state.recuperandoSenha){
-        await bootstrapSessao();
-      } else if(tinhaSessao && !state.recuperandoSenha) {
-        limparSessao();
-      }
-      render();
-    });
-  }
-
-  // Salva (com pequeno debounce) as alterações do perfil no Supabase.
-  function saveUserData(){
-    if(!state.session) return;
-    clearTimeout(debounceSalvarPerfil);
-    debounceSalvarPerfil = setTimeout(() => {
-      window.db.atualizarUsuario(state.session.user.id, state.userProfile);
-    }, 500);
-  }
-
-  // Envia e-mail/senha de login para o Supabase Auth.
-  async function doLogin(email, senha){
-    if(!isValidEmail(email)){ state.authError = 'Informe um e-mail corporativo válido.'; render(); return; }
-    if(!senha){ state.authError = 'Informe sua senha.'; render(); return; }
-
-    state.authError = '';
-    state.authConfirmMsg = '';
-    state.authSending = true;
-    render();
-
-    const { error } = await window.db.signIn(email.trim().toLowerCase(), senha);
-
-    state.authSending = false;
-    if(error){
-      state.authError = error.message === 'Invalid login credentials'
-        ? 'E-mail ou senha incorretos.'
-        : error.message;
-      render();
-      return;
-    }
-    // onAuthStateChange cuida do bootstrap e do render.
-  }
-
-  // Cria uma nova conta no Supabase Auth (a linha em "usuarios" é criada automaticamente).
-  async function doSignup(email, senha){
-    if(!isValidEmail(email)){ state.authError = 'Informe um e-mail corporativo válido.'; render(); return; }
-    if(!senha || senha.length < 6){ state.authError = 'A senha deve ter ao menos 6 caracteres.'; render(); return; }
-
-    state.authError = '';
-    state.authConfirmMsg = '';
-    state.authSending = true;
-    render();
-
-    const { data, error } = await window.db.signUp(email.trim().toLowerCase(), senha);
-
-    state.authSending = false;
-    if(error){
-      state.authError = error.message;
-      render();
-      return;
-    }
-
-    if(!data.session){
-      // Confirmação de e-mail está ativa no projeto: avisa e volta pro login.
-      state.authMode = 'login';
-      state.authConfirmMsg = 'Cadastro realizado! Verifique seu e-mail para confirmar a conta antes de entrar.';
-    }
-    render();
-  }
-
-  // Envia o e-mail com o link de recuperação de senha.
-  async function doRecuperarSenha(email){
-    if(!isValidEmail(email)){ state.authError = 'Informe um e-mail válido.'; render(); return; }
-
-    state.authError = '';
-    state.authConfirmMsg = '';
-    state.authSending = true;
-    render();
-
-    const { error } = await window.db.resetPasswordForEmail(email.trim().toLowerCase());
-
-    state.authSending = false;
-    if(error){
-      state.authError = error.message;
-      render();
-      return;
-    }
-
-    state.authMode = 'login';
-    state.authConfirmMsg = 'Se esse e-mail estiver cadastrado, enviamos um link para redefinir a senha. Confira sua caixa de entrada.';
-    render();
-  }
-
-  // Define a nova senha após o usuário clicar no link recebido por e-mail.
-  async function doDefinirNovaSenha(novaSenha, confirmarSenha){
-    state.novaSenhaError = '';
-
-    if(!novaSenha || novaSenha.length < 6){ state.novaSenhaError = 'A senha deve ter ao menos 6 caracteres.'; render(); return; }
-    if(novaSenha !== confirmarSenha){ state.novaSenhaError = 'As senhas não coincidem.'; render(); return; }
-
-    state.authSending = true;
-    render();
-
-    const { error } = await window.db.updatePassword(novaSenha);
-
-    state.authSending = false;
-    if(error){
-      state.novaSenhaError = error.message;
-      render();
-      return;
-    }
-
-    // Senha trocada com sucesso: a sessão temporária do link já vira a sessão
-    // válida, então entramos direto no app como se tivesse acabado de logar.
-    state.recuperandoSenha = false;
-    await bootstrapSessao();
-    render();
-    showToast('Senha atualizada com sucesso!');
-  }
-
-  // Encerra a sessão do usuário e volta para a tela de identificação.
-  async function logoutUser(){
-    await window.db.signOut();
-    // onAuthStateChange cuida da limpeza e do render.
-  }
-
-  // Cancela uma solicitação (o estorno de estoque acontece no banco, via RPC).
-  async function cancelarSolicitacao(id){
-    const { error } = await window.db.cancelarSolicitacao(id);
-    if(error){
-      showToast('Não foi possível cancelar: ' + error.message);
-      return;
-    }
-    const [produtos, solicitacoes] = await Promise.all([
-      window.db.listarProdutos(),
-      window.db.listarSolicitacoes(state.usuarioId)
-    ]);
-    state.produtos = produtos;
-    state.solicitacoes = solicitacoes;
-    showToast('Solicitação cancelada e estoque estornado.');
-    render();
-  }
-
-  // Gera e baixa um arquivo Excel com o histórico de solicitações do usuário.
-  async function exportarCSV(){
-    if(!state.solicitacoes.length){ showToast('Não há solicitações salvas para este usuário.'); return; }
+  // Gera uma planilha .xlsx de verdade: cabeçalho colorido em negrito, bordas em
+  // toda a tabela, linhas zebradas e coluna de destaque quando indicado. Usada
+  // nas listas de compra, que precisam ser lidas/impressas por outras pessoas
+  // (fornecedor, financeiro), não só abertas no navegador.
+  async function exportarExcelFormatado(titulo, colunas, linhas, nomeArquivo){
+    if(!linhas || linhas.length === 0){ showToast('Nada para exportar no momento.'); return; }
+    if(typeof ExcelJS === 'undefined'){ showToast('Biblioteca de planilha não carregada — recarregue a página e tente de novo.'); return; }
 
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = 'Sistema de Solicitações';
+    workbook.creator = 'Sistema de Controle de Estoque';
     workbook.created = new Date();
 
-    const sheet = workbook.addWorksheet('Solicitações', { views: [{ state: 'frozen', ySplit: 1 }] });
+    const sheet = workbook.addWorksheet(titulo, { views: [{ state: 'frozen', ySplit: 1 }] });
+    sheet.columns = colunas.map(c => ({ header: c.header, key: c.key, width: c.width || 18 }));
 
-    sheet.columns = [
-      { header: 'Solicitante',  key: 'nome',         width: 25 },
-      { header: 'Email',        key: 'email',        width: 28 },
-      { header: 'Matrícula',    key: 'matricula',    width: 14 },
-      { header: 'Setor',        key: 'setor',        width: 18 },
-      { header: 'Centro Custo', key: 'centroCusto',  width: 16 },
-      { header: 'Item',         key: 'item',         width: 30 },
-      { header: 'Quantidade',   key: 'quantidade',   width: 12 },
-      { header: 'Endereço',     key: 'endereco',      width: 40 },
-      { header: 'Urgência',     key: 'urgencia',     width: 12 },
-      { header: 'Status',       key: 'status',       width: 14 },
-      { header: 'Data',         key: 'dataCriacao',  width: 14 },
-    ];
+    linhas.forEach(linha => sheet.addRow(linha));
 
-    // Percorre cada solicitação para adicioná-la como uma linha na planilha.
-    state.solicitacoes.forEach(s => {
-      const dataConvertida = s.dataCriacao ? new Date(s.dataCriacao) : null;
-      sheet.addRow({
-        nome: s.nome, email: s.email, matricula: s.matricula || '', setor: s.setor || '', centroCusto: s.centroCusto || '',
-        item: s.item, quantidade: s.quantidade, endereco: s.endereco || '', urgencia: s.urgencia, status: s.status,
-        dataCriacao: (dataConvertida && !isNaN(dataConvertida)) ? dataConvertida : s.dataCriacao,
-      });
-    });
-
-    sheet.getColumn('dataCriacao').numFmt = 'dd/mm/yyyy';
+    colunas.forEach(c => { if(c.numFmt) sheet.getColumn(c.key).numFmt = c.numFmt; });
 
     const headerRow = sheet.getRow(1);
-    // Aplica a formatação ao cabeçalho da planilha.
     headerRow.eachCell(cell => {
       cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2F5597' } };
@@ -528,48 +444,276 @@
     });
     headerRow.height = 24;
 
-    // Aplica alinhamento, bordas e preenchimento às linhas da planilha.
     sheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return;
-      // Formata cada célula individualmente.
+      if(rowNumber === 1) return;
+      const linhaOriginal = linhas[rowNumber - 2];
+      const destaque = linhaOriginal && linhaOriginal._destaque;
       row.eachCell(cell => {
         cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
         cell.border = {
           top: { style: 'thin', color: { argb: 'FFD9D9D9' } }, left: { style: 'thin', color: { argb: 'FFD9D9D9' } },
           bottom: { style: 'thin', color: { argb: 'FFD9D9D9' } }, right: { style: 'thin', color: { argb: 'FFD9D9D9' } }
         };
+        if(destaque){ cell.font = { color: { argb: 'FFCC0000' }, bold: true }; }
       });
-      if (rowNumber % 2 === 0) {
-        // Aplica o preenchimento alternado nas linhas pares.
+      if(!destaque && rowNumber % 2 === 0){
         row.eachCell(cell => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }; });
+      } else if(destaque){
+        row.eachCell(cell => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE8E6' } }; });
       }
       row.height = 20;
     });
 
-    sheet.autoFilter = { from: 'A1', to: `K${state.solicitacoes.length + 1}` };
+    const ultimaColuna = String.fromCharCode(64 + colunas.length);
+    sheet.autoFilter = { from: 'A1', to: `${ultimaColuna}${linhas.length + 1}` };
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/octet-stream' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `Minhas_Solicitacoes_${esc(state.currentUserEmail)}_${new Date().toISOString().slice(0,10)}.xlsx`;
+    link.download = `${nomeArquivo}_${new Date().toISOString().slice(0,10)}.xlsx`;
     link.click();
     URL.revokeObjectURL(link.href);
-    showToast('Relatório Excel exportado!');
+    showToast(`Planilha ${nomeArquivo}.xlsx exportada com sucesso!`);
   }
 
-  // Envia um e-mail real via a Edge Function "send-email" (que usa a Resend).
-  // Precisa de sessão ativa porque a função exige um usuário autenticado.
-  async function enviarEmail({ to, subject, html, text }){
+  // Exporta uma lista de compras com todos os itens em ruptura (zerados ou
+  // abaixo do estoque mínimo), já sugerindo quanto comprar de cada um e o
+  // custo estimado da reposição — pronta para mandar pro fornecedor/compras.
+  async function exportarListaCompras(){
+    const emRuptura = state.produtos.filter(p => Number(p.estoque||0) <= Number(p.quantidadeMinima||5));
+
+    if(emRuptura.length === 0){ showToast('Nenhum item em ruptura no momento — nada para exportar.'); return; }
+
+    const colunas = [
+      { header: 'SKU',              key: 'sku',            width: 14 },
+      { header: 'Material',         key: 'material',       width: 32 },
+      { header: 'Categoria',        key: 'categoria',      width: 16 },
+      { header: 'Estoque Atual',    key: 'estoqueAtual',   width: 14 },
+      { header: 'Estoque Mínimo',   key: 'estoqueMinimo',  width: 14 },
+      { header: 'Situação',         key: 'situacao',       width: 18 },
+      { header: 'Qtd. Sugerida',    key: 'qtdSugerida',    width: 14 },
+      { header: 'Unidade',          key: 'unidade',        width: 10 },
+      { header: 'Preço Unitário',   key: 'precoUnitario',  width: 15, numFmt: '"R$" #,##0.00' },
+      { header: 'Custo Estimado',   key: 'custoEstimado',  width: 16, numFmt: '"R$" #,##0.00' },
+      { header: 'Fornecedor',       key: 'fornecedor',     width: 24 },
+    ];
+
+    let custoTotalGeral = 0;
+    const linhas = emRuptura
+      .sort((a,b) => a.estoque - b.estoque) // mais crítico (mais perto/abaixo de zero) primeiro
+      .map(p => {
+        // Sugere repor até o dobro do mínimo, garantindo uma folga além de só "zerar a ruptura".
+        const qtdSugerida = Math.max((Number(p.quantidadeMinima||5) * 2) - Number(p.estoque||0), 1);
+        const custoEstimado = qtdSugerida * Number(p.preco||0);
+        custoTotalGeral += custoEstimado;
+        const zerado = p.estoque <= 0;
+        return {
+          sku: p.sku, material: p.nome, categoria: p.categoria,
+          estoqueAtual: p.estoque, estoqueMinimo: p.quantidadeMinima,
+          situacao: zerado ? 'ZERADO' : 'ABAIXO DO MÍNIMO',
+          qtdSugerida, unidade: p.unidade,
+          precoUnitario: Number(p.preco || 0), custoEstimado,
+          fornecedor: p.fornecedor || '—',
+          _destaque: zerado
+        };
+      });
+
+    await exportarExcelFormatado('Lista de Compras', colunas, linhas, 'Lista_de_Compras_Reposicao');
+    showToast(`Lista exportada: ${emRuptura.length} item(ns) em ruptura, custo estimado total ${fmtMoney(custoTotalGeral)}.`);
+  }
+
+  // Exporta a lista de itens sem estoque que colaboradores JÁ pediram e estão
+  // aguardando (demanda real e concreta, diferente da lista de ruptura preventiva).
+  async function exportarComprasUrgentes(itensUrgentes){
+    if(!itensUrgentes || itensUrgentes.length === 0){ showToast('Nenhum item com pedido pendente sem estoque no momento.'); return; }
+
+    const colunas = [
+      { header: 'SKU',                       key: 'sku',               width: 14 },
+      { header: 'Material',                  key: 'material',          width: 32 },
+      { header: 'Qtd. Pedida (Pendente)',     key: 'qtdPendente',       width: 18 },
+      { header: 'Pedidos Aguardando',         key: 'pedidosAguardando', width: 16 },
+      { header: 'Preço Unitário',            key: 'precoUnitario',     width: 15, numFmt: '"R$" #,##0.00' },
+      { header: 'Custo Estimado',            key: 'custoEstimado',     width: 16, numFmt: '"R$" #,##0.00' },
+      { header: 'Fornecedor',                key: 'fornecedor',        width: 24 },
+    ];
+
+    let custoTotal = 0;
+    const linhas = itensUrgentes.map(it => {
+      const produto = state.produtos.find(p => p.id === it.produtoId);
+      const preco = produto ? Number(produto.preco||0) : 0;
+      const custo = preco * it.quantidade;
+      custoTotal += custo;
+      return {
+        sku: produto ? produto.sku : '—', material: it.nome,
+        qtdPendente: it.quantidade, pedidosAguardando: it.pedidos,
+        precoUnitario: preco, custoEstimado: custo,
+        fornecedor: produto ? (produto.fornecedor || '—') : '—',
+        _destaque: true
+      };
+    });
+
+    await exportarExcelFormatado('Compra Urgente', colunas, linhas, 'Compra_Urgente_Demanda_Real');
+    showToast(`Lista exportada: ${itensUrgentes.length} item(ns) com colaboradores aguardando, custo estimado ${fmtMoney(custoTotal)}.`);
+  }
+
+  // ==========================================================================
+  // Camada de dados: tudo agora vem do Supabase (nada mais em localStorage/window.storage).
+  // ==========================================================================
+
+  // Converte uma linha da tabela "produtos" para o formato usado pela UI.
+  function mapProduto(row){
+    return {
+      id: row.id,
+      sku: row.sku || row.codigo,
+      nome: row.nome,
+      categoria: row.categoria || 'Geral',
+      estoque: Number(row.estoque || 0),
+      quantidadeMinima: Number(row.quantidade_minima ?? 5),
+      preco: Number(row.preco || 0),
+      fornecedor: row.fornecedor || '',
+      unidade: row.unidade || 'un'
+    };
+  }
+
+  // Converte uma linha da tabela "solicitacoes" para o formato usado pela UI.
+  function mapSolicitacao(row){
+    return {
+      id: row.id,
+      nome: row.nome,
+      email: row.email,
+      matricula: row.matricula,
+      setor: row.setor,
+      centroCusto: row.centro_custo,
+      item: row.item,
+      quantidade: row.quantidade,
+      urgencia: row.urgencia,
+      motivo: row.motivo,
+      endereco: row.endereco,
+      status: row.status,
+      dataCriacao: row.data_criacao
+    };
+  }
+
+  function mapLog(row){
+    return { id: row.id, data: row.criado_em, usuario: row.usuario_email || '—', acao: row.acao, detalhe: row.detalhe };
+  }
+
+  async function carregarProdutos(){
+    const { data, error } = await supabaseClient.from('produtos').select('*').order('nome');
+    if(error){ console.error(error); return []; }
+    return (data || []).map(mapProduto);
+  }
+
+  async function carregarSolicitacoes(){
+    const { data, error } = await supabaseClient.from('solicitacoes').select('*').order('data_criacao', { ascending: false });
+    if(error){ console.error(error); return []; }
+    const solicitacoes = (data || []).map(mapSolicitacao);
+
+    const ids = solicitacoes.map(s => s.id);
+    if(ids.length > 0){
+      const { data: itensData, error: itensError } = await supabaseClient
+        .from('solicitacao_itens')
+        .select('solicitacao_id, produto_id, quantidade, disponivel, produtos ( nome, sku, categoria )')
+        .in('solicitacao_id', ids);
+
+      if(!itensError && itensData){
+        const porSolicitacao = {};
+        itensData.forEach(row => {
+          if(!porSolicitacao[row.solicitacao_id]) porSolicitacao[row.solicitacao_id] = [];
+          porSolicitacao[row.solicitacao_id].push({
+            produtoId: row.produto_id,
+            nome: row.produtos ? row.produtos.nome : 'Produto removido',
+            sku: row.produtos ? row.produtos.sku : '—',
+            categoria: row.produtos ? row.produtos.categoria : '',
+            quantidade: row.quantidade,
+            disponivel: row.disponivel
+          });
+        });
+        solicitacoes.forEach(s => { s.itens = porSolicitacao[s.id] || []; });
+      }
+    }
+
+    return solicitacoes;
+  }
+
+  async function carregarLogs(){
+    const { data, error } = await supabaseClient.from('logs').select('*').order('criado_em', { ascending: false }).limit(50);
+    if(error){ console.error(error); return []; }
+    return (data || []).map(mapLog);
+  }
+
+  async function carregarConfig(){
+    const { data, error } = await supabaseClient.from('config').select('*').eq('chave', 'email_controle').maybeSingle();
+    if(error || !data){ return 'yuri.silva1@sgs.com'; }
+    return data.valor || 'yuri.silva1@sgs.com';
+  }
+
+  async function addLog(acao, detalhe){
+    await supabaseClient.from('logs').insert({
+      usuario_email: state.session ? state.session.user.email : null,
+      acao, detalhe
+    });
+    state.logs = await carregarLogs();
+  }
+
+  async function addProduto(payload){
+    const { error } = await supabaseClient.from('produtos').insert({
+      nome: payload.nome,
+      codigo: payload.sku,
+      sku: payload.sku,
+      categoria: payload.categoria,
+      estoque: payload.quantidade,
+      quantidade_minima: payload.quantidadeMinima,
+      preco: payload.preco,
+      fornecedor: payload.fornecedor,
+      unidade: 'un'
+    });
+    if(error){ showToast('Erro ao cadastrar: ' + error.message); return; }
+    state.produtos = await carregarProdutos();
+    await addLog('CADASTRAR_PRODUTO', `Produto "${payload.nome}" adicionado.`);
+    showToast('Produto cadastrado e sincronizado com o banco.');
+  }
+
+  async function updateProduto(id, payload){
+    const { error } = await supabaseClient.from('produtos').update({
+      nome: payload.nome,
+      codigo: payload.sku,
+      sku: payload.sku,
+      categoria: payload.categoria,
+      estoque: payload.quantidade,
+      quantidade_minima: payload.quantidadeMinima,
+      preco: payload.preco,
+      fornecedor: payload.fornecedor,
+      atualizado_em: new Date().toISOString()
+    }).eq('id', id);
+    if(error){ showToast('Erro ao atualizar: ' + error.message); return; }
+    state.produtos = await carregarProdutos();
+    await addLog('ATUALIZAR_PRODUTO', `Produto "${payload.nome}" atualizado.`);
+    showToast('Produto atualizado e sincronizado com o banco.');
+  }
+
+  async function deleteProduto(id){
+    const prod = state.produtos.find(p=>p.id===id);
+    const { error } = await supabaseClient.from('produtos').delete().eq('id', id);
+    if(error){
+      showToast('Não foi possível excluir: item já usado em solicitações existentes.');
+      return;
+    }
+    state.produtos = await carregarProdutos();
+    await addLog('EXCLUIR_PRODUTO', `Produto "${prod ? prod.nome : id}" removido.`);
+    showToast('Produto removido do catálogo.');
+  }
+
+  // Muda o status de uma solicitação via função segura no banco (ela cuida do estoque).
+  // Envia um e-mail real via a Edge Function "send-email" (usa a Resend).
+  async function enviarEmail({ to, subject, html }){
     if(!state.session) return { error: 'Sem sessão ativa.' };
     try {
       const resp = await fetch(`${SUPABASE_URL}/functions/v1/send-email`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${state.session.access_token}`
-        },
-        body: JSON.stringify({ to, subject, html, text })
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.session.access_token}` },
+        body: JSON.stringify({ to, subject, html })
       });
       const data = await resp.json();
       if(!resp.ok){ return { error: data.error || 'Falha ao enviar e-mail.' }; }
@@ -579,506 +723,489 @@
     }
   }
 
-  // Monta e envia o e-mail de notificação para a central de suprimentos sobre uma nova solicitação.
-  async function enviarEmailAutomatico(payload) {
-    state.sending = true;
-    state.lastStatus = { type: 'sending', msg: 'Encaminhando solicitação...' };
-    render();
+  const STATUS_LABEL = { aprovado: 'Aprovado ✅', rejeitado: 'Rejeitado ❌', entregue: 'Entregue 📦', pendente: 'Pendente', cancelado: 'Cancelado' };
+  const STATUS_COR = { aprovado: '#10B981', rejeitado: '#FF3F00', entregue: '#0EA5E9', pendente: '#FF7F11', cancelado: '#94A3B8' };
 
-    const temItensSemEstoque = payload.itensSemEstoque && payload.itensSemEstoque.length > 0;
-    const assunto = temItensSemEstoque
-      ? `[URGENTE - SEM ESTOQUE] Solicitação de ${payload.nome}`
-      : `[SUPRIMENTOS] Nova solicitação de ${payload.nome}`;
-
-    const alertaHtml = temItensSemEstoque ? `
-      <div style="background:#FEE2E2; border:1px solid #FF3F00; border-radius:8px; padding:12px 16px; margin-bottom:16px;">
-        <strong style="color:#FF3F00;">⚠️ COMPRA URGENTE NECESSÁRIA</strong>
-        <p style="margin:6px 0 0; font-size:13.5px; color:#7A1F00;">
-          O(s) item(ns) abaixo não têm estoque disponível no momento e precisam ser comprados para atender este pedido:
-          <br><strong>${payload.itensSemEstoque.map(esc).join(', ')}</strong>
-        </p>
-      </div>
-    ` : '';
-
+  // Notifica o colaborador por e-mail sobre a mudança de status do próprio pedido.
+  async function notificarColaborador(sol, novoStatus){
+    if(!sol || !sol.email) return;
+    const label = STATUS_LABEL[novoStatus] || novoStatus.toUpperCase();
+    const cor = STATUS_COR[novoStatus] || '#666';
     const html = `
       <div style="font-family:sans-serif; max-width:560px;">
-        ${alertaHtml}
-        <h2 style="color:#FF7F11;">Nova Solicitação de Material</h2>
-        <table style="border-collapse:collapse; width:100%; font-size:14px;">
-          <tr><td style="padding:6px 0; color:#666;">Solicitante</td><td style="padding:6px 0;"><strong>${esc(payload.nome)}</strong></td></tr>
-          <tr><td style="padding:6px 0; color:#666;">E-mail</td><td style="padding:6px 0;">${esc(payload.email)}</td></tr>
-          <tr><td style="padding:6px 0; color:#666;">Matrícula</td><td style="padding:6px 0;">${esc(payload.matricula) || '—'}</td></tr>
-          <tr><td style="padding:6px 0; color:#666;">Setor</td><td style="padding:6px 0;">${esc(payload.setor) || '—'}</td></tr>
-          <tr><td style="padding:6px 0; color:#666;">Centro de Custo</td><td style="padding:6px 0;">${esc(payload.centroCusto) || '—'}</td></tr>
-          <tr><td style="padding:6px 0; color:#666;">Item(ns)</td><td style="padding:6px 0;"><strong>${esc(payload.item)}</strong></td></tr>
-          <tr><td style="padding:6px 0; color:#666;">Quantidade Total</td><td style="padding:6px 0;">${esc(payload.quantidade)}</td></tr>
-          <tr><td style="padding:6px 0; color:#666;">Urgência</td><td style="padding:6px 0;">${esc((payload.urgencia||'').toUpperCase())}</td></tr>
-          <tr><td style="padding:6px 0; color:#666; vertical-align:top;">Endereço de Entrega</td><td style="padding:6px 0;">${esc(payload.endereco) || '—'}</td></tr>
-          <tr><td style="padding:6px 0; color:#666; vertical-align:top;">Observações</td><td style="padding:6px 0;">${esc(payload.motivo) || '—'}</td></tr>
+        <h2 style="color:${cor};">Atualização da sua solicitação</h2>
+        <p>Olá, ${esc(sol.nome)}.</p>
+        <p>Sua solicitação foi atualizada para: <strong style="color:${cor};">${esc(label)}</strong></p>
+        <table style="border-collapse:collapse; width:100%; font-size:14px; margin-top:12px;">
+          <tr><td style="padding:6px 0; color:#666;">Item(ns)</td><td style="padding:6px 0;"><strong>${esc(sol.item)}</strong></td></tr>
+          <tr><td style="padding:6px 0; color:#666;">Quantidade</td><td style="padding:6px 0;">${esc(sol.quantidade)}</td></tr>
         </table>
-        <p style="color:#999; font-size:12px; margin-top:24px;">Acesse o painel administrativo para aprovar ou rejeitar este pedido.</p>
+        <p style="color:#999; font-size:12px; margin-top:24px;">Qualquer dúvida, entre em contato com o setor de suprimentos.</p>
       </div>
     `;
-
-    const { error } = await enviarEmail({ to: EMAIL_RESPONSAVEL, subject: assunto, html });
-
-    if(error){
-      state.lastStatus = { type: 'success', msg: 'Pedido salvo com sucesso! (o e-mail de notificação não pôde ser enviado agora, mas seu pedido está registrado)' };
-    } else if(temItensSemEstoque){
-      state.lastStatus = { type: 'warning', msg: `Solicitação enviada! Atenção: ${payload.itensSemEstoque.join(', ')} está(ão) sem estoque no momento — a central de suprimentos foi avisada com urgência.` };
-    } else {
-      state.lastStatus = { type: 'success', msg: 'Solicitação enviada e e-mail de notificação encaminhado com sucesso!' };
-    }
-    state.sending = false;
-    render();
+    await enviarEmail({ to: sol.email, subject: `[SUPRIMENTOS] Sua solicitação foi ${label}`, html });
   }
 
-  // Valida o formulário, envia para o banco (que confere estoque e debita numa transação) e notifica.
-  async function submitForm(){
-    const f = state.form;
-    const p = state.userProfile;
-    state.error = '';
+  async function atualizarStatus(id, status){
+    const sol = state.solicitacoes.find(s=>s.id===id);
+    const { error } = await supabaseClient.rpc('admin_atualizar_status_solicitacao', {
+      p_solicitacao_id: id,
+      p_novo_status: status
+    });
+    if(error){ showToast('Erro ao atualizar status: ' + error.message); return; }
+    state.produtos = await carregarProdutos();
+    state.solicitacoes = await carregarSolicitacoes();
+    await addLog('STATUS_SOLICITACAO', `Pedido de ${sol ? sol.nome : id} alterado para ${status.toUpperCase()}.`);
+    showToast(`Solicitação${sol ? ' de ' + sol.nome : ''} marcada como ${status.toUpperCase()}. Notificando por e-mail...`);
+    const { error: erroEmail } = await notificarColaborador(sol, status) || {};
+    if(erroEmail){ showToast('Status atualizado, mas o e-mail de notificação falhou.'); }
+  }
 
-    if(!p.nome.trim()){ state.error = 'Preencha o seu nome completo.'; render(); return; }
-
-    if(!enderecoValido(f.endereco)){
-      state.error = 'Informe o endereço de entrega completo (CEP, número e cidade/UF).';
+  let realtimeSubscribed = false;
+  function garantirRealtime(){
+    if(realtimeSubscribed) return;
+    realtimeSubscribed = true;
+    supabaseClient.channel('admin-produtos').on('postgres_changes', { event: '*', schema: 'public', table: 'produtos' }, async () => {
+      state.produtos = await carregarProdutos();
       render();
-      return;
+    }).subscribe();
+    supabaseClient.channel('admin-solicitacoes').on('postgres_changes', { event: '*', schema: 'public', table: 'solicitacoes' }, async () => {
+      state.solicitacoes = await carregarSolicitacoes();
+      render();
+    }).subscribe();
+  }
+
+  // ==========================================================================
+  // Autenticação (somente administradores acessam este painel).
+  // ==========================================================================
+
+  async function loadAll(){
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    state.session = session;
+    if(session){
+      await bootstrapAdmin();
     }
-
-    let itens = [];
-    let itemResumo = '';
-    let quantidadeTotal = 0;
-
-    if(f.usarLivre){
-      if(!f.itemLivre.trim()){ state.error = 'Especifique o item personalizado.'; render(); return; }
-      if(!f.quantidadeLivre || f.quantidadeLivre < 1){ state.error = 'Informe uma quantidade válida.'; render(); return; }
-      itemResumo = f.itemLivre.trim();
-      quantidadeTotal = f.quantidadeLivre;
-    } else {
-      const idsSelecionados = Object.keys(f.itens);
-      if(idsSelecionados.length === 0){ state.error = 'Selecione ao menos um item do catálogo.'; render(); return; }
-      for(const id of idsSelecionados){
-        if(!f.itens[id] || f.itens[id] < 1){ state.error = 'Informe uma quantidade válida para cada item selecionado.'; render(); return; }
-      }
-      itens = idsSelecionados.map(id => ({ produtoId: id, quantidade: f.itens[id] }));
-      const nomesPorId = Object.fromEntries(state.produtos.map(p2 => [p2.id, p2.nome]));
-      itemResumo = itens.map(i => `${nomesPorId[i.produtoId] || 'Item'} (x${i.quantidade})`).join(', ');
-      quantidadeTotal = itens.reduce((soma, i) => soma + i.quantidade, 0);
-    }
-
-    const enderecoTexto = montarEnderecoTexto(f.endereco);
-
-    state.sending = true;
-    state.lastStatus = { type: 'sending', msg: 'Registrando solicitação e atualizando estoque...' };
+    state.loaded = true;
     render();
 
-    const { data: registro, error } = await window.db.criarSolicitacao({
-      itens,
-      itemCustomizado: f.usarLivre ? f.itemLivre.trim() : null,
-      quantidadeCustomizada: f.usarLivre ? f.quantidadeLivre : null,
-      urgencia: f.urgencia,
-      motivo: f.motivo,
-      endereco: enderecoTexto
-    });
-
-    if(error){
-      state.sending = false;
-      state.lastStatus = null;
-      state.error = error.message;
+    supabaseClient.auth.onAuthStateChange(async (event, session) => {
+      if(event === 'PASSWORD_RECOVERY'){
+        state.session = session;
+        state.recuperandoSenha = true;
+        render();
+        return;
+      }
+      state.session = session;
+      if(session && !state.recuperandoSenha){
+        await bootstrapAdmin();
+      } else if(!state.recuperandoSenha) {
+        state.isAdmin = null;
+        state.produtos = []; state.solicitacoes = []; state.logs = []; state.emailControle = '';
+      }
       render();
-      return;
-    }
+    });
+  }
 
-    const [produtos, solicitacoes] = await Promise.all([
-      window.db.listarProdutos(),
-      window.db.listarSolicitacoes(state.usuarioId)
+  async function bootstrapAdmin(){
+    const { data: souAdmin, error } = await supabaseClient.rpc('is_admin');
+    state.isAdmin = !error && souAdmin === true;
+    if(!state.isAdmin) return;
+
+    const [produtos, solicitacoes, logs, emailControle] = await Promise.all([
+      carregarProdutos(), carregarSolicitacoes(), carregarLogs(), carregarConfig()
     ]);
     state.produtos = produtos;
     state.solicitacoes = solicitacoes;
-
-    // Verifica se algum item do pedido que acabou de ser criado ficou sem estoque
-    // (o banco permite o pedido seguir mesmo assim, só marca o item pra reposição).
-    const pedidoCriado = solicitacoes.find(s => s.id === (registro && registro.id));
-    const itensSemEstoque = pedidoCriado ? (pedidoCriado.itens || []).filter(i => i.disponivel === false) : [];
-    const nomesPorIdFinal = Object.fromEntries(produtos.map(p2 => [p2.id, p2.nome]));
-    const nomesSemEstoque = itensSemEstoque.map(i => nomesPorIdFinal[i.produtoId] || 'item');
-
-    state.form.itens = {};
-    state.form.itemLivre = '';
-    state.form.quantidadeLivre = 1;
-    state.form.motivo = '';
-    // Mantém o endereço preenchido (é comum pedir de novo pro mesmo lugar).
-
-    await enviarEmailAutomatico({
-      nome: p.nome,
-      email: state.currentUserEmail,
-      matricula: p.matricula,
-      setor: p.setor,
-      centroCusto: p.centroCusto,
-      item: itemResumo,
-      quantidade: quantidadeTotal,
-      urgencia: f.urgencia,
-      motivo: f.motivo,
-      endereco: enderecoTexto,
-      status: registro ? registro.status : 'pendente',
-      itensSemEstoque: nomesSemEstoque
-    });
+    state.logs = logs;
+    state.emailControle = emailControle;
+    garantirRealtime();
   }
 
-  // Reconstrói a interface principal conforme o estado atual da aplicação.
+  async function doLogin(email, senha){
+    if(!isValidEmail(email)){ state.authError = 'Informe um e-mail válido.'; render(); return; }
+    if(!senha){ state.authError = 'Informe sua senha.'; render(); return; }
+    state.authError = ''; state.authConfirmMsg = ''; state.authSending = true; render();
+    const { error } = await supabaseClient.auth.signInWithPassword({ email: email.trim().toLowerCase(), password: senha });
+    state.authSending = false;
+    if(error){
+      state.authError = error.message === 'Invalid login credentials' ? 'E-mail ou senha incorretos.' : error.message;
+      render();
+    }
+  }
+
+  async function doSignup(email, senha){
+    if(!isValidEmail(email)){ state.authError = 'Informe um e-mail válido.'; render(); return; }
+    if(!senha || senha.length < 6){ state.authError = 'A senha deve ter ao menos 6 caracteres.'; render(); return; }
+    state.authError = ''; state.authConfirmMsg = ''; state.authSending = true; render();
+    // emailRedirectTo garante que, ao confirmar o e-mail, o admin volte para
+    // ESTE painel (e não para o "Site URL" padrão, que aponta para o portal
+    // do colaborador, um domínio diferente).
+    const { data, error } = await supabaseClient.auth.signUp({
+      email: email.trim().toLowerCase(),
+      password: senha,
+      options: { emailRedirectTo: window.location.origin + window.location.pathname }
+    });
+    state.authSending = false;
+    if(error){ state.authError = error.message; render(); return; }
+    if(!data.session){
+      state.authMode = 'login';
+      state.authConfirmMsg = 'Cadastro realizado! Verifique seu e-mail para confirmar antes de entrar.';
+    }
+    render();
+  }
+
+  async function logoutUser(){
+    await supabaseClient.auth.signOut();
+  }
+
+  async function doRecuperarSenha(email){
+    if(!isValidEmail(email)){ state.authError = 'Informe um e-mail válido.'; render(); return; }
+    state.authError = ''; state.authConfirmMsg = ''; state.authSending = true; render();
+
+    const { error } = await supabaseClient.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      redirectTo: window.location.origin + window.location.pathname
+    });
+
+    state.authSending = false;
+    if(error){ state.authError = error.message; render(); return; }
+
+    state.authMode = 'login';
+    state.authConfirmMsg = 'Se esse e-mail estiver cadastrado como admin, enviamos um link para redefinir a senha.';
+    render();
+  }
+
+  async function doDefinirNovaSenha(novaSenha, confirmarSenha){
+    state.novaSenhaError = '';
+    if(!novaSenha || novaSenha.length < 6){ state.novaSenhaError = 'A senha deve ter ao menos 6 caracteres.'; render(); return; }
+    if(novaSenha !== confirmarSenha){ state.novaSenhaError = 'As senhas não coincidem.'; render(); return; }
+
+    state.authSending = true; render();
+    const { error } = await supabaseClient.auth.updateUser({ password: novaSenha });
+    state.authSending = false;
+
+    if(error){ state.novaSenhaError = error.message; render(); return; }
+
+    state.recuperandoSenha = false;
+    await bootstrapAdmin();
+    render();
+    showToast('Senha atualizada com sucesso!');
+  }
+
+  // ==========================================================================
+  // Render
+  // ==========================================================================
+
+  // ==========================================================================
+  // Pós-render. O app redesenha tudo a cada toast/atualização em tempo real, o
+  // que fazia as animações de entrada (cards, sidebar, modal, toast) tocarem de
+  // novo toda hora. Aqui controlamos por "chave de tela": a animação só toca
+  // quando a tela/aba/modal realmente muda. Estilos: seção MELHORIAS do CSS.
+  // ==========================================================================
+  let mxUltimaChave = null, mxUltimoModal = null, mxUltimoToast = null, mxToastInicio = 0;
+  const mxReduz = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function mxContar(el, destino, formato, atraso){
+    const ini = performance.now() + atraso, dur = 950;
+    el.textContent = formato(0);
+    const passo = (agora) => {
+      if(!el.isConnected) return;
+      const p = Math.min(Math.max((agora - ini) / dur, 0), 1);
+      el.textContent = formato(destino * (1 - Math.pow(1 - p, 3)));
+      if(p < 1) requestAnimationFrame(passo);
+    };
+    requestAnimationFrame(passo);
+  }
+
+  function posRender(){
+    app.style.position = 'relative'; app.style.zIndex = '1';   // conteúdo sempre acima do fundo
+    let chave;
+    if(!state.loaded) chave = 'load';
+    else if(state.recuperandoSenha) chave = 'recup';
+    else if(!state.session) chave = 'auth:' + state.authMode;
+    else if(state.isAdmin === null) chave = 'verif';
+    else if(!state.isAdmin) chave = 'negado';
+    else chave = 'app:' + state.tab;
+
+    const anterior = mxUltimaChave;
+    const mudouTela = chave !== anterior;
+    const soTrocouAba = mudouTela && chave.startsWith('app') && anterior && anterior.startsWith('app');
+    mxUltimaChave = chave;
+
+    // Re-render sem mudança de tela: não repete as animações de entrada.
+    app.classList.toggle('mx-quiet', !mudouTela);
+    app.classList.toggle('mx-quiet-side', !mudouTela || soTrocouAba);
+    app.classList.toggle('mx-quiet-modal', state.modal === mxUltimoModal);
+    mxUltimoModal = state.modal;
+
+    // Login / recuperação / acesso negado: deixa o fundo animado aparecer.
+    const ehAuth = chave.startsWith('auth') || chave === 'recup' || chave === 'negado';
+    if(ehAuth){
+      app.querySelectorAll('.overlay').forEach(o => o.classList.add('mx-auth'));
+      const box = app.querySelector('.login-box');
+      if(box && !box.querySelector('.mx-login-brand')){
+        box.insertAdjacentHTML('afterbegin', `
+          <div class="mx-login-brand">
+            <svg viewBox="0 0 240 110" height="26" xmlns="http://www.w3.org/2000/svg" aria-label="SGS" style="display:block;flex-shrink:0;">
+              <text x="0" y="82" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="98" letter-spacing="-3" fill="#77787B">SGS</text>
+              <line x1="0" y1="96" x2="228" y2="96" stroke="#F47920" stroke-width="6"/>
+              <line x1="210" y1="0" x2="210" y2="110" stroke="#F47920" stroke-width="6"/>
+            </svg>
+            <span>Controle de Estoque</span>
+          </div>`);
+      }
+    }
+
+    // Cards: elementos de luz (foco do mouse) e anel de alerta, atrás do conteúdo.
+    app.querySelectorAll('.stat-card').forEach(c => c.insertAdjacentHTML('afterbegin', '<i class="mx-spot"></i><i class="mx-ring"></i>'));
+
+    // Entrada da aba: números contam até o valor; painéis e linhas entram em sequência.
+    if(mudouTela && chave.startsWith('app') && !mxReduz){
+      const content = app.querySelector('.content');
+      if(content){
+        content.querySelectorAll('.panel').forEach((el, i) => el.style.setProperty('--i', i));
+        content.querySelectorAll('tbody tr').forEach((el, i) => el.style.setProperty('--i', Math.min(i, 14)));
+        content.querySelectorAll('.stat-card .value').forEach((el, i) => {
+          const txt = el.textContent.trim();
+          const atraso = i * 85 + 330;   // acompanha o "deal" dos tickets
+          if(/^\d+$/.test(txt)) mxContar(el, parseInt(txt, 10), v => String(Math.round(v)), atraso);
+          else if(/R\$/.test(txt)){
+            const n = parseFloat(txt.replace(/[^\d,]/g, '').replace(',', '.'));
+            if(!isNaN(n)) mxContar(el, n, fmtMoney, atraso);
+          }
+        });
+        content.querySelectorAll('.chart-val').forEach((el, i) => {
+          const m = el.textContent.trim().match(/^(\d+(?:[.,]\d+)?)%$/);
+          if(m) mxContar(el, parseFloat(m[1].replace(',', '.')), v => Math.round(v) + '%', 500 + i * 70);
+        });
+
+        // Painéis fora da tela entram só quando você rola até eles.
+        if('IntersectionObserver' in window){
+          const fora = [...content.querySelectorAll('.panel')].filter(p => p.getBoundingClientRect().top > window.innerHeight * .92);
+          if(fora.length){
+            const io = new IntersectionObserver(es => es.forEach(e => {
+              if(e.isIntersecting){ e.target.classList.add('mx-in'); io.unobserve(e.target); }
+            }), { threshold: .12 });
+            fora.forEach(p => { p.classList.add('mx-hold'); io.observe(p); });
+          }
+        }
+
+        content.insertAdjacentHTML('afterbegin', '<i class="mx-wipe"></i>');
+        content.classList.add('mx-enter');
+        app.classList.add('mx-tab');
+        setTimeout(() => { content.classList.remove('mx-enter'); content.querySelector('.mx-wipe')?.remove(); }, 1700);
+        setTimeout(() => app.classList.remove('mx-tab'), 1100);
+      }
+    }
+
+    // Toast: anima uma vez; a barra de tempo continua de onde estava.
+    const toast = app.querySelector('.toast');
+    if(toast){
+      const novo = state.toast !== mxUltimoToast;
+      if(novo) mxToastInicio = performance.now();
+      toast.classList.toggle('mx-toast-quiet', !novo);
+      toast.style.setProperty('--mx-t', (-(performance.now() - mxToastInicio) / 1000).toFixed(3) + 's');
+    }
+    mxUltimoToast = toast ? state.toast : null;
+  }
+
   function render(){
+    renderBase();
+    posRender();
+  }
+
+  function renderBase(){
     app.innerHTML = '';
-    if(!state.loaded) return;
+    if(!state.loaded){ app.appendChild(elFrag(`<div class="mx-loader"><div class="mx-loader-ring"></div><span>Conectando ao banco de dados…</span></div>`)); return; }
 
-    if(state.recuperandoSenha){
-      renderDefinirNovaSenhaModal();
-      return;
-    }
+    if(state.recuperandoSenha){ renderDefinirNovaSenhaModal(); return; }
+    if(!state.session){ renderLogin(); return; }
 
-    if(!state.session){
-      renderLoginModal();
-      return;
-    }
+    if(state.isAdmin === null){ app.appendChild(elFrag(`<div class="mx-loader"><div class="mx-loader-ring"></div><span>Verificando permissões…</span></div>`)); return; }
 
-    if(state.toast) app.appendChild(elFrag(`<div class="toast">${state.toast}</div>`));
+    if(!state.isAdmin){ renderAcessoNegado(); return; }
 
-    if(state.showInfoModal){
-      renderInfoModal();
-    }
+    if(state.toast) app.appendChild(elFrag(`<div class="toast"><span style="color:var(--ok)">✓</span> ${state.toast}</div>`));
 
-    const headerBar = elFrag(`
-      <div class="header-bar">
-        <div class="brand" style="display:flex; align-items:center; gap:10px;">
+    const pendentes = state.solicitacoes.filter(s=>s.status==='pendente').length;
+
+    const backdrop = elFrag(`<div class="sidebar-backdrop ${state.sidebarAberta ? 'open' : ''}"></div>`);
+    backdrop.onclick = () => { state.sidebarAberta = false; render(); };
+    app.appendChild(backdrop);
+
+    const sidebar = elFrag(`
+      <div class="sidebar ${state.sidebarAberta ? 'open' : ''}">
+        <div style="display:flex; align-items:center; gap:10px;">
           <svg viewBox="0 0 240 110" height="26" xmlns="http://www.w3.org/2000/svg" aria-label="SGS" style="display:block; flex-shrink:0;">
             <text x="0" y="82" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="98" letter-spacing="-3" fill="#77787B">SGS</text>
             <line x1="0" y1="96" x2="228" y2="96" stroke="#F47920" stroke-width="6"/>
             <line x1="210" y1="0" x2="210" y2="110" stroke="#F47920" stroke-width="6"/>
           </svg>
-          <span class="brand-badge" style="margin-left:4px;">Solicitações</span>
+          <span class="brand-badge" style="margin-left:4px;">Controle de Estoque</span>
         </div>
-        <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
-          <div class="dim mono" style="font-size:12px;">
-            Central: <strong style="color:var(--text);">${EMAIL_RESPONSAVEL}</strong>
-          </div>
-          <button class="secondary" id="theme-toggle-btn" style="font-size:12px; display:flex; align-items:center; gap:6px;">
-            ${state.theme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro'}
-          </button>
+
+        <div class="role-selector">
+          <label>Sessão</label>
+          <div class="mono" style="font-size:12px; color:var(--text); word-break:break-all;">${state.session.user.email}</div>
         </div>
+
+        <div class="nav-item ${state.tab==='dashboard'?'active':''}" data-tab="dashboard">📊 Dashboard</div>
+        <div class="nav-item ${state.tab==='produtos'?'active':''}" data-tab="produtos">📦 Produtos</div>
+        <div class="nav-item ${state.tab==='solicitacoes'?'active':''}" data-tab="solicitacoes">📝 Solicitações<span class="dot ${pendentes?'show':''}"></span></div>
+        <div class="nav-item ${state.tab==='logs'?'active':''}" data-tab="logs">📜 Histórico / Logs</div>
+        <div class="nav-item ${state.tab==='config'?'active':''}" data-tab="config">⚙️ Configurações</div>
+        <div class="nav-item" id="nav-logout" style="margin-top:auto;">🚪 Sair</div>
       </div>
     `);
 
-    // Alterna entre os temas claro e escuro e salva a preferência do usuário.
-    headerBar.querySelector('#theme-toggle-btn').onclick = () => {
-      state.theme = state.theme === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('app_theme', state.theme);
-      document.documentElement.setAttribute('data-theme', state.theme);
-      render();
+    sidebar.querySelectorAll('.nav-item[data-tab]').forEach(n=>{
+      n.onclick = ()=>{ state.tab=n.dataset.tab; state.sidebarAberta = false; render(); };
+    });
+    sidebar.querySelector('#nav-logout').onclick = logoutUser;
+    app.appendChild(sidebar);
+
+    const main = document.createElement('div');
+    main.className = 'main';
+    app.appendChild(main);
+
+    const titles = {
+      dashboard:['Visão Geral','Panorama do estoque e métricas operacionais'],
+      produtos:['Inventário','Gerencie o catálogo de produtos do banco de dados'],
+      solicitacoes:['Fila de Pedidos','Analise, aprova e acompanhe as requisições'],
+      logs:['Auditoria e Histórico','Registro das últimas ações realizadas neste painel'],
+      config:['Configurações do Sistema','Preferências globais de e-mail e parâmetros'],
+    };
+    const [title, sub] = titles[state.tab] || ['Painel',''];
+
+    const topbar = elFrag(`
+      <div class="topbar">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <button class="menu-toggle-btn" id="menu-toggle-btn" aria-label="Abrir menu">☰</button>
+          <div><h2>${title}</h2><p>${sub}</p></div>
+        </div>
+        <button class="secondary" id="theme-toggle-btn" style="display:flex; align-items:center; gap:6px;">
+          ${state.theme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro'}
+        </button>
+      </div>
+    `);
+
+    topbar.querySelector('#menu-toggle-btn').onclick = () => { state.sidebarAberta = true; render(); };
+
+    topbar.querySelector('#theme-toggle-btn').onclick = (ev) => {
+      window.mxTransicaoTema(ev, () => {
+        state.theme = state.theme === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('app_theme', state.theme);
+        document.documentElement.setAttribute('data-theme', state.theme);
+        render();
+      });
     };
 
-    app.appendChild(headerBar);
+    main.appendChild(topbar);
 
     const content = document.createElement('div');
     content.className = 'content';
-    app.appendChild(content);
+    main.appendChild(content);
 
-    const initial = state.currentUserEmail.charAt(0).toUpperCase();
-    content.appendChild(elFrag(`
-      <div class="user-session-bar">
-        <div class="user-info-tag">
-          <div class="user-avatar">${initial}</div>
-          <div>
-            <div>Sessão ativa: <strong>${esc(state.currentUserEmail)}</strong></div>
-            <div class="dim" style="font-size:11.5px;">Sincronizado em tempo real com o controle de estoque.</div>
-          </div>
-        </div>
-        <button class="secondary" id="btn-logout" style="font-size:12px;">Sair</button>
-      </div>
-    `));
+    if(state.tab==='dashboard') renderDashboard(content);
+    else if(state.tab==='produtos') renderProdutos(content);
+    else if(state.tab==='solicitacoes') renderSolicitacoes(content);
+    else if(state.tab==='logs') renderLogs(content);
+    else if(state.tab==='config') renderConfig(content);
 
-    const pendentes = state.solicitacoes.filter(s => s.status === 'pendente').length;
-    const aprovados = state.solicitacoes.filter(s => s.status === 'aprovado' || s.status === 'entregue').length;
-    const rejeitados = state.solicitacoes.filter(s => s.status === 'rejeitado' || s.status === 'cancelado').length;
-
-    content.appendChild(elFrag(`
-      <div class="kpi-row" id="kpi-container">
-        <div class="kpi-card">
-          <div class="label">Meus Pedidos</div>
-          <div class="val" id="kpi-total">${state.solicitacoes.length}</div>
-        </div>
-        <div class="kpi-card">
-          <div class="label">Em Análise</div>
-          <div class="val" style="color:var(--amber);" id="kpi-pend">${pendentes}</div>
-        </div>
-        <div class="kpi-card">
-          <div class="label">Aprovados</div>
-          <div class="val" style="color:var(--ok);" id="kpi-aprov">${aprovados}</div>
-        </div>
-        <div class="kpi-card">
-          <div class="label">Cancelados/Reprovados</div>
-          <div class="val" style="color:var(--danger);" id="kpi-rejej">${rejeitados}</div>
-        </div>
-      </div>
-    `));
-
-    if(state.lastStatus){
-      content.appendChild(elFrag(`
-        <div class="status-banner ${state.lastStatus.type}" id="status-banner-box">
-          <span>${state.lastStatus.msg}</span>
-          <button class="secondary" onclick="this.parentElement.remove()" style="padding:4px 8px; font-size:11px;">Fechar</button>
-        </div>
-      `));
-    }
-
-    content.appendChild(buildFormPanel());
-    content.appendChild(buildHistoryPanel());
-
-    // Navegação compacta entre solicitação e histórico, evitando uma página longa.
-    const formPanel = content.querySelector('.panel');
-    const historyPanel = content.querySelector('#history-panel-box');
-    const nav = elFrag(`
-      <nav class="workspace-tabs" aria-label="Seções do portal">
-        <button type="button" class="workspace-tab active" data-view="request">
-          <span class="workspace-tab-icon">＋</span>
-          <span><strong>Nova solicitação</strong><small>Preencher pedido</small></span>
-        </button>
-        <button type="button" class="workspace-tab" data-view="history">
-          <span class="workspace-tab-icon">▤</span>
-          <span><strong>Meus pedidos</strong><small>${state.solicitacoes.length} registro(s)</small></span>
-        </button>
-      </nav>
-    `);
-    if(formPanel && historyPanel){
-      historyPanel.hidden = true;
-      content.insertBefore(nav, formPanel);
-      nav.querySelectorAll('.workspace-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-          const showHistory = tab.dataset.view === 'history';
-          formPanel.hidden = showHistory;
-          historyPanel.hidden = !showHistory;
-          nav.querySelectorAll('.workspace-tab').forEach(item => item.classList.toggle('active', item === tab));
-        });
-      });
-    }
-    wireEvents(content);
+    if(state.modal) renderModal();
   }
 
-  // Abre ou atualiza o modal que apresenta as informações detalhadas da planilha.
-  function renderInfoModal(){
-    let existingOverlay = document.querySelector('.modal-overlay');
-    if (existingOverlay) {
-      updateModalContent(existingOverlay);
-      return;
-    }
-
-    const modal = elFrag(`
-      <div class="modal-overlay">
-        <div class="modal-card" id="modal-card-container"></div>
-      </div>
-    `);
-
-    modal.querySelector('#modal-card-container').innerHTML = getModalInnerHtml();
-    attachModalEvents(modal);
-    app.appendChild(modal);
-  }
-
-  // Monta o HTML interno do modal usando a aba atualmente selecionada.
-  function getModalInnerHtml(){
-    const abas = Object.keys(PLANILHA_ABAS_DADOS);
-    const dadosAtuais = PLANILHA_ABAS_DADOS[state.activeTab] || { headers: [], rows: [] };
-
-    return `
-      <div class="modal-header">
-        <h3 style="margin:0; font-family:var(--font-display);">Informações Detalhadas (Todas as Abas)</h3>
-        <button class="secondary" id="close-modal-btn">✕ Fechar</button>
-      </div>
-      <div class="tabs-header">
-        ${abas.map(aba => `<button class="tab-btn ${state.activeTab === aba ? 'active' : ''}" data-tab="${aba}">${aba.toUpperCase()}</button>`).join('')}
-      </div>
-      <div class="modal-body">
-        <table>
-          <thead>
-            <tr>
-              ${dadosAtuais.headers.map(h => `<th>${h || ''}</th>`).join('')}
-            </tr>
-          </thead>
-          <tbody>
-            ${dadosAtuais.rows.map(row => `
-              <tr>
-                ${dadosAtuais.headers.map((_, i) => `<td>${row[i] !== undefined && row[i] !== null ? row[i] : ''}</td>`).join('')}
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
-  }
-
-  // Atualiza somente o conteúdo do modal sem recriar seu overlay.
-  function updateModalContent(overlay){
-    const container = overlay.querySelector('#modal-card-container');
-    if(container){
-      container.innerHTML = getModalInnerHtml();
-      attachModalEvents(overlay);
-    }
-  }
-
-  // Conecta os eventos dos botões de fechar e das abas do modal.
-  function attachModalEvents(modalElement){
-    // Fecha o modal e atualiza o estado correspondente.
-    modalElement.querySelector('#close-modal-btn').onclick = () => {
-      state.showInfoModal = false;
-      const overlay = document.querySelector('.modal-overlay');
-      if(overlay) overlay.remove();
-    };
-
-    // Percorre os botões de abas para associar o evento de seleção.
-    modalElement.querySelectorAll('.tab-btn').forEach(btn => {
-      // Troca a aba ativa e atualiza o conteúdo exibido no modal.
-      btn.onclick = (e) => {
-        state.activeTab = e.target.dataset.tab;
-        const overlay = document.querySelector('.modal-overlay');
-        if(overlay) {
-          updateModalContent(overlay);
-        } else {
-          render();
-        }
-      };
-    });
-  }
-
-  // Cria a tela de login/cadastro com e-mail e senha (autenticação real via Supabase Auth).
-  function renderLoginModal(){
+  // Tela de login/cadastro (autenticação real via Supabase Auth).
+  function renderLogin(){
     if(state.authMode === 'recuperar'){ renderRecuperarSenhaModal(); return; }
 
     const isSignup = state.authMode === 'signup';
-    const modal = elFrag(`
-      <div class="login-overlay">
-        <div class="login-card">
-          <h2>${isSignup ? 'Criar Conta' : 'Acesso ao Portal'}</h2>
-          <p class="dim" style="font-size:13.5px; margin:0 0 20px; line-height:1.4;">
-            ${isSignup ? 'Cadastre-se com seu e-mail corporativo e uma senha.' : 'Entre com seu e-mail corporativo e senha para acessar o portal de suprimentos.'}
-          </p>
-          <div class="field">
-            <label>Seu E-mail Corporativo <span style="color:var(--amber);">*</span></label>
-            <input id="login-email" type="email" placeholder="nome@empresa.com" autofocus>
-          </div>
-          <div class="field" style="margin-top:12px;">
-            <label>Senha <span style="color:var(--amber);">*</span></label>
-            <input id="login-senha" type="password" placeholder="${isSignup ? 'Mínimo 6 caracteres' : 'Sua senha'}">
-          </div>
+    const overlay = elFrag(`
+      <div class="overlay">
+        <div class="modal login-box">
+          <h3>${isSignup ? 'Criar Conta de Administrador' : 'Acesso Restrito — BackOffice'}</h3>
+          <p class="modal-sub">${isSignup ? 'Cadastre-se com o e-mail autorizado como administrador.' : 'Entre com seu e-mail e senha de administrador.'}</p>
+          <div class="field"><label>E-mail</label><input id="login-email" type="email" placeholder="nome@empresa.com" autofocus></div>
+          <div class="field"><label>Senha</label><input id="login-senha" type="password" placeholder="${isSignup ? 'Mínimo 6 caracteres' : 'Sua senha'}"></div>
           ${!isSignup ? `<div style="text-align:right; margin-top:6px;"><span id="link-esqueci-senha" style="color:var(--steel); cursor:pointer; text-decoration:underline; font-size:12px;">Esqueci minha senha</span></div>` : ''}
           ${state.authConfirmMsg ? `<div style="color:var(--ok); font-size:12.5px; margin-top:12px;">${state.authConfirmMsg}</div>` : ''}
           ${state.authError ? `<div style="color:var(--danger); font-size:12.5px; margin-top:12px;">${state.authError}</div>` : ''}
-          <button class="primary" id="login-btn" style="margin-top:16px;" ${state.authSending ? 'disabled' : ''}>
-            ${state.authSending ? 'Aguarde...' : (isSignup ? 'Criar conta' : 'Entrar')}
-          </button>
+          <button class="primary" id="login-btn" style="width:100%; margin-top:14px;" ${state.authSending ? 'disabled' : ''}>${state.authSending ? 'Aguarde...' : (isSignup ? 'Criar conta' : 'Entrar')}</button>
           <div style="text-align:center; margin-top:14px; font-size:12.5px;">
-            <span class="dim">${isSignup ? 'Já tem conta?' : 'Ainda não tem conta?'}</span>
+            <span class="dim">${isSignup ? 'Já tem conta?' : 'Precisa criar a conta de admin?'}</span>
             <span id="toggle-auth-mode" style="color:var(--steel); cursor:pointer; text-decoration:underline; margin-left:4px;">${isSignup ? 'Entrar' : 'Criar conta'}</span>
           </div>
         </div>
       </div>
     `);
+    app.appendChild(overlay);
 
-    app.appendChild(modal);
-
-    const btn = modal.querySelector('#login-btn');
-    const emailInput = modal.querySelector('#login-email');
-    const senhaInput = modal.querySelector('#login-senha');
-
+    const btn = overlay.querySelector('#login-btn');
+    const emailInput = overlay.querySelector('#login-email');
+    const senhaInput = overlay.querySelector('#login-senha');
     const doSubmit = () => isSignup ? doSignup(emailInput.value, senhaInput.value) : doLogin(emailInput.value, senhaInput.value);
     btn.onclick = doSubmit;
-    // Permite enviar pressionando Enter em qualquer um dos dois campos.
-    emailInput.onkeydown = (e) => { if(e.key === 'Enter') senhaInput.focus(); };
     senhaInput.onkeydown = (e) => { if(e.key === 'Enter') doSubmit(); };
-
-    modal.querySelector('#toggle-auth-mode').onclick = () => {
+    overlay.querySelector('#toggle-auth-mode').onclick = () => {
       state.authMode = isSignup ? 'login' : 'signup';
-      state.authError = '';
-      state.authConfirmMsg = '';
+      state.authError = ''; state.authConfirmMsg = '';
       render();
     };
 
-    const linkEsqueci = modal.querySelector('#link-esqueci-senha');
+    const linkEsqueci = overlay.querySelector('#link-esqueci-senha');
     if(linkEsqueci) linkEsqueci.onclick = () => {
       state.authMode = 'recuperar';
-      state.authError = '';
-      state.authConfirmMsg = '';
+      state.authError = ''; state.authConfirmMsg = '';
       render();
     };
   }
 
-  // Tela para o usuário pedir o e-mail de recuperação de senha.
   function renderRecuperarSenhaModal(){
-    const modal = elFrag(`
-      <div class="login-overlay">
-        <div class="login-card">
-          <h2>Recuperar Senha</h2>
-          <p class="dim" style="font-size:13.5px; margin:0 0 20px; line-height:1.4;">
-            Informe o e-mail da sua conta. Vamos enviar um link para você definir uma nova senha.
-          </p>
-          <div class="field">
-            <label>Seu E-mail Corporativo <span style="color:var(--amber);">*</span></label>
-            <input id="recuperar-email" type="email" placeholder="nome@empresa.com" autofocus>
-          </div>
+    const overlay = elFrag(`
+      <div class="overlay">
+        <div class="modal login-box">
+          <h3>Recuperar Senha</h3>
+          <p class="modal-sub">Informe o e-mail da conta de administrador. Vamos enviar um link para redefinir a senha.</p>
+          <div class="field"><label>E-mail</label><input id="recuperar-email" type="email" placeholder="nome@empresa.com" autofocus></div>
           ${state.authError ? `<div style="color:var(--danger); font-size:12.5px; margin-top:12px;">${state.authError}</div>` : ''}
-          <button class="primary" id="recuperar-btn" style="margin-top:16px;" ${state.authSending ? 'disabled' : ''}>
-            ${state.authSending ? 'Enviando...' : 'Enviar link de recuperação'}
-          </button>
+          <button class="primary" id="recuperar-btn" style="width:100%; margin-top:14px;" ${state.authSending ? 'disabled' : ''}>${state.authSending ? 'Enviando...' : 'Enviar link de recuperação'}</button>
           <div style="text-align:center; margin-top:14px; font-size:12.5px;">
             <span id="voltar-login" style="color:var(--steel); cursor:pointer; text-decoration:underline;">← Voltar para o login</span>
           </div>
         </div>
       </div>
     `);
+    app.appendChild(overlay);
 
-    app.appendChild(modal);
-
-    const emailInput = modal.querySelector('#recuperar-email');
-    const btn = modal.querySelector('#recuperar-btn');
+    const emailInput = overlay.querySelector('#recuperar-email');
+    const btn = overlay.querySelector('#recuperar-btn');
     const doSubmit = () => doRecuperarSenha(emailInput.value);
     btn.onclick = doSubmit;
     emailInput.onkeydown = (e) => { if(e.key === 'Enter') doSubmit(); };
-
-    modal.querySelector('#voltar-login').onclick = () => {
+    overlay.querySelector('#voltar-login').onclick = () => {
       state.authMode = 'login';
       state.authError = '';
       render();
     };
   }
 
-  // Tela para definir a nova senha, exibida quando o usuário chega via link do e-mail.
   function renderDefinirNovaSenhaModal(){
-    const modal = elFrag(`
-      <div class="login-overlay">
-        <div class="login-card">
-          <h2>Definir Nova Senha</h2>
-          <p class="dim" style="font-size:13.5px; margin:0 0 20px; line-height:1.4;">
-            Escolha uma nova senha para sua conta.
-          </p>
-          <div class="field">
-            <label>Nova Senha <span style="color:var(--amber);">*</span></label>
-            <input id="nova-senha" type="password" placeholder="Mínimo 6 caracteres" autofocus>
-          </div>
-          <div class="field" style="margin-top:12px;">
-            <label>Confirmar Nova Senha <span style="color:var(--amber);">*</span></label>
-            <input id="confirmar-senha" type="password" placeholder="Repita a nova senha">
-          </div>
+    const overlay = elFrag(`
+      <div class="overlay">
+        <div class="modal login-box">
+          <h3>Definir Nova Senha</h3>
+          <p class="modal-sub">Escolha uma nova senha para sua conta de administrador.</p>
+          <div class="field"><label>Nova Senha</label><input id="nova-senha" type="password" placeholder="Mínimo 6 caracteres" autofocus></div>
+          <div class="field"><label>Confirmar Nova Senha</label><input id="confirmar-senha" type="password" placeholder="Repita a nova senha"></div>
           ${state.novaSenhaError ? `<div style="color:var(--danger); font-size:12.5px; margin-top:12px;">${state.novaSenhaError}</div>` : ''}
-          <button class="primary" id="definir-senha-btn" style="margin-top:16px;" ${state.authSending ? 'disabled' : ''}>
-            ${state.authSending ? 'Salvando...' : 'Salvar Nova Senha'}
-          </button>
+          <button class="primary" id="definir-senha-btn" style="width:100%; margin-top:14px;" ${state.authSending ? 'disabled' : ''}>${state.authSending ? 'Salvando...' : 'Salvar Nova Senha'}</button>
         </div>
       </div>
     `);
+    app.appendChild(overlay);
 
-    app.appendChild(modal);
-
-    const novaSenhaInput = modal.querySelector('#nova-senha');
-    const confirmarInput = modal.querySelector('#confirmar-senha');
-    const btn = modal.querySelector('#definir-senha-btn');
+    const novaSenhaInput = overlay.querySelector('#nova-senha');
+    const confirmarInput = overlay.querySelector('#confirmar-senha');
+    const btn = overlay.querySelector('#definir-senha-btn');
     const doSubmit = () => doDefinirNovaSenha(novaSenhaInput.value, confirmarInput.value);
     btn.onclick = doSubmit;
     novaSenhaInput.onkeydown = (e) => { if(e.key === 'Enter') confirmarInput.focus(); };
@@ -1086,464 +1213,650 @@
   }
 
 
-  // Constrói o painel de nova requisição e seus campos de preenchimento.
-  function buildFormPanel(){
-    const f = state.form;
-    const p = state.userProfile;
-
-    const panel = elFrag(`
-      <div class="panel">
-        <div class="panel-head"><h3>Nova Requisição de Material</h3></div>
-
-        <div class="field-row-3">
-          <div class="field">
-            <label>Nome Completo <span class="req">*</span></label>
-            <input id="p-nome" value="${esc(p.nome)}" placeholder="Seu nome completo">
-          </div>
-          <div class="field">
-            <label>Matrícula / ID</label>
-            <input id="p-matricula" value="${esc(p.matricula)}" placeholder="Ex: M-10293">
-          </div>
-          <div class="field">
-            <label>E-mail (Chave da Conta)</label>
-            <input value="${esc(state.currentUserEmail)}" readonly style="opacity:0.7; cursor:not-allowed;">
-          </div>
+  function renderAcessoNegado(){
+    const overlay = elFrag(`
+      <div class="overlay">
+        <div class="modal" style="max-width:420px; text-align:center;">
+          <h3>Acesso Negado</h3>
+          <p class="modal-sub">A conta <strong>${state.session.user.email}</strong> não tem permissão de administrador para este painel.</p>
+          <button class="secondary" id="btn-sair" style="width:100%;">Sair</button>
         </div>
-
-        <div class="field-row">
-          <div class="field">
-            <label>Departamento / Setor</label>
-            <input id="p-setor" value="${esc(p.setor)}" placeholder="Ex: Operações / RH">
-          </div>
-          <div class="field">
-            <label>Centro de Custo</label>
-            <input id="p-centro" value="${esc(p.centroCusto)}" placeholder="Ex: CC-3040">
-          </div>
-        </div>
-
-        <hr style="border:none; border-top:1px solid var(--border); margin:20px 0;">
-
-        <div class="field" style="margin-bottom:20px;">
-          <button class="secondary" id="btn-ver-info" style="width:100%; background:var(--panel-2); border-color:var(--amber); color:var(--text); font-weight:600; padding:12px;">
-            📋 Consultar Informações da Planilha (Abas: EPIs, ADM, Operação)
-          </button>
-        </div>
-
-        <div class="field">
-          <label>Selecione os Itens do Catálogo — informe a quantidade de cada um</label>
-          <input id="busca-item" placeholder="Filtrar item por nome ou SKU..." value="${esc(state.busca)}" style="margin-bottom:12px;">
-          <div class="product-grid" id="product-grid"></div>
-          <span id="toggle-outro" style="color:var(--steel); font-size:12px; cursor:pointer; text-decoration:underline;">
-            ${f.usarLivre ? '← Voltar ao catálogo padronizado' : 'Item não listado? Descrever produto personalizado →'}
-          </span>
-        </div>
-
-        <div id="custom-item-container">
-          ${f.usarLivre ? `
-            <div class="field-row" style="margin-top:12px;">
-              <div class="field" style="flex:2;">
-                <label>Descrição do Item Especial <span class="req">*</span></label>
-                <input id="f-item-livre" value="${esc(f.itemLivre)}" placeholder="Informe especificações técnicas, modelo ou marca desejada">
-              </div>
-              <div class="field">
-                <label>Quantidade <span class="req">*</span></label>
-                <input id="f-qtd-livre" type="number" min="1" value="${f.quantidadeLivre}">
-              </div>
-            </div>
-          ` : ''}
-        </div>
-
-        <div class="field" style="margin-top:16px;">
-          <label>Prioridade / Urgência</label>
-          <select id="f-urgencia">
-            <option value="baixa" ${f.urgencia==='baixa'?'selected':''}>Baixa - Rotina operacional</option>
-            <option value="normal" ${f.urgencia==='normal'?'selected':''}>Normal - Necessidade regular</option>
-            <option value="alta" ${f.urgencia==='alta'?'selected':''}>Alta - Impacto em atividades</option>
-          </select>
-        </div>
-
-        <hr style="border:none; border-top:1px solid var(--border); margin:20px 0;">
-
-        <div class="field">
-          <label>Endereço de Entrega <span class="req">*</span></label>
-        </div>
-        <div class="field-row-3">
-          <div class="field">
-            <label>CEP <span class="req">*</span></label>
-            <input id="f-cep" value="${esc(f.endereco.cep)}" placeholder="00000-000" maxlength="9" inputmode="numeric">
-          </div>
-          <div class="field" style="grid-column: span 2;">
-            <label>Logradouro <span class="req">*</span></label>
-            <input id="f-logradouro" value="${esc(f.endereco.logradouro)}" placeholder="${f.buscandoCep ? 'Buscando endereço...' : 'Rua, Avenida...'}" ${f.buscandoCep ? 'disabled' : ''}>
-          </div>
-        </div>
-        ${f.erroCep ? `<div style="color:var(--danger); font-size:12.5px; margin:-8px 0 12px;">${f.erroCep}</div>` : ''}
-        <div class="field-row-3">
-          <div class="field">
-            <label>Número <span class="req">*</span></label>
-            <input id="f-numero" value="${esc(f.endereco.numero)}" placeholder="Nº">
-          </div>
-          <div class="field">
-            <label>Complemento</label>
-            <input id="f-complemento" value="${esc(f.endereco.complemento)}" placeholder="Bloco, apto, sala...">
-          </div>
-          <div class="field">
-            <label>Bairro</label>
-            <input id="f-bairro" value="${esc(f.endereco.bairro)}" placeholder="Bairro">
-          </div>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Cidade <span class="req">*</span></label>
-            <input id="f-cidade" value="${esc(f.endereco.cidade)}" placeholder="Cidade">
-          </div>
-          <div class="field">
-            <label>UF <span class="req">*</span></label>
-            <input id="f-uf" value="${esc(f.endereco.uf)}" placeholder="UF" maxlength="2" style="text-transform:uppercase;">
-          </div>
-        </div>
-
-        <div class="field" style="margin-top:8px;">
-          <label>Observações</label>
-          <textarea id="f-motivo" rows="2" placeholder="Alguma observação adicional sobre o pedido (opcional)...">${esc(f.motivo)}</textarea>
-        </div>
-
-        <div id="form-error-box" style="color:var(--danger); font-size:13px; margin-bottom:12px;">${state.error}</div>
-
-        <button class="primary" id="submit-btn" ${state.sending ? 'disabled' : ''}>
-          ${state.sending ? 'Processando envio...' : 'Enviar Solicitação e Atualizar Estoque'}
-        </button>
       </div>
     `);
-
-    // Organiza cada bloco do formulário em uma área independente do layout.
-    const formBlocks = Array.from(panel.children);
-    formBlocks[0]?.classList.add('form-title');
-    formBlocks[1]?.classList.add('form-profile');
-    formBlocks[2]?.classList.add('form-sector');
-    formBlocks[3]?.classList.add('form-divider');
-    formBlocks[4]?.classList.add('form-info');
-    formBlocks[5]?.classList.add('form-catalog');
-    formBlocks[6]?.classList.add('form-custom-item');
-    formBlocks[7]?.classList.add('form-urgency');
-    formBlocks[8]?.classList.add('form-divider-secondary');
-    formBlocks[9]?.classList.add('form-address-title');
-    formBlocks[10]?.classList.add('form-address-main');
-    formBlocks[11]?.classList.add('form-cep-error');
-    const numberRow = panel.querySelector('.field-row-3:has(#f-numero)');
-    const cityRow = panel.querySelector('.field-row:has(#f-cidade)');
-    numberRow?.classList.add('form-address-number');
-    cityRow?.classList.add('form-address-city');
-    panel.querySelector('.field:has(#f-motivo)')?.classList.add('form-notes');
-    panel.querySelector('#form-error-box')?.classList.add('form-error');
-    panel.querySelector('#submit-btn')?.classList.add('form-submit');
-
-    // Abre o modal com as informações detalhadas da planilha.
-    panel.querySelector('#btn-ver-info').onclick = () => {
-      state.showInfoModal = true;
-      renderInfoModal();
-    };
-
-    return panel;
+    overlay.querySelector('#btn-sair').onclick = logoutUser;
+    app.appendChild(overlay);
   }
 
-  // Constrói o painel que exibe o histórico de solicitações do usuário.
-  function buildHistoryPanel(){
-    const list = state.solicitacoes;
-    return elFrag(`
-      <div class="panel" id="history-panel-box">
-        <div class="panel-head">
-          <h3>Meus Pedidos (${esc(state.currentUserEmail)})</h3>
-          <button class="secondary" id="btn-export">📥 Exportar Meus Pedidos (CSV)</button>
+  function renderDashboard(content){
+    const abaixoMinimo = state.produtos.filter(p => Number(p.estoque||0) <= Number(p.quantidadeMinima||5));
+    const pendentes = state.solicitacoes.filter(s=>s.status==='pendente');
+    const valorTotal = state.produtos.reduce((a,p)=>a + Number(p.estoque||0) * Number(p.preco||0),0);
+
+    // Itens sem estoque pedidos por colaboradores em pedidos ainda ativos
+    // (pendente/aprovado) — é demanda REAL e concreta, não só "abaixo do mínimo".
+    const itensUrgentesMap = {};
+    state.solicitacoes
+      .filter(s => s.status === 'pendente' || s.status === 'aprovado')
+      .forEach(s => {
+        (s.itens || []).filter(it => it.disponivel === false).forEach(it => {
+          const key = it.produtoId || it.nome;
+          if(!itensUrgentesMap[key]) itensUrgentesMap[key] = { produtoId: it.produtoId, nome: it.nome, sku: it.sku, quantidade: 0, pedidos: 0 };
+          itensUrgentesMap[key].quantidade += it.quantidade;
+          itensUrgentesMap[key].pedidos += 1;
+        });
+      });
+    const itensUrgentes = Object.values(itensUrgentesMap).sort((a,b) => b.quantidade - a.quantidade);
+
+    const categorias = {};
+    state.produtos.forEach(p => {
+      const val = Number(p.estoque||0) * Number(p.preco||0);
+      categorias[p.categoria] = (categorias[p.categoria] || 0) + val;
+    });
+
+    const dashboardEl = elFrag(`
+      <div>
+        <div class="stat-grid">
+          <div class="stat-card" data-card="total">
+            <div class="label">SKUs no Catálogo</div>
+            <div class="value">${state.produtos.length}</div>
+            <span class="click-hint">Clique para ver inventário →</span>
+          </div>
+          <div class="stat-card ${itensUrgentes.length ? 'danger' : ''}" data-card="urgente">
+            <div class="label">🔴 Compra Urgente (sem estoque)</div>
+            <div class="value">${itensUrgentes.length}</div>
+            <span class="click-hint">Colaboradores aguardando →</span>
+          </div>
+          <div class="stat-card ${abaixoMinimo.length ? 'danger' : ''}" data-card="reposicao">
+            <div class="label">Alerta de Reposição</div>
+            <div class="value">${abaixoMinimo.length}</div>
+            <span class="click-hint">Clique para ver itens a repor →</span>
+          </div>
+          <div class="stat-card ${pendentes.length ? 'warn' : ''}" data-card="pendentes">
+            <div class="label">Aguardando Aprovação</div>
+            <div class="value">${pendentes.length}</div>
+            <span class="click-hint">Clique para gerenciar pedidos →</span>
+          </div>
+          <div class="stat-card" data-card="capital">
+            <div class="label">Capital Imobilizado</div>
+            <div class="value" style="font-size:24px; color:var(--steel);">${fmtMoney(valorTotal)}</div>
+            <span class="click-hint">Clique para ver detalhes →</span>
+          </div>
         </div>
 
-        <div id="history-table-wrapper">
-          ${list.length === 0 ? `<div class="empty-state">Você ainda não possui solicitações registradas nesta conta.</div>` : `
-            <div style="overflow-x:auto;">
+        ${itensUrgentes.length > 0 ? `
+          <div class="panel" style="border-color:var(--danger);">
+            <div class="panel-head">
+              <h3 style="color:var(--danger);">🔴 Compra Urgente — Colaboradores Aguardando</h3>
+              <button class="secondary" id="btn-exportar-urgente" style="border-color:var(--danger); color:var(--danger);">📥 Exportar Lista de Compra Urgente</button>
+            </div>
+            <p class="dim" style="font-size:12.5px; margin:-8px 0 14px;">Estes itens foram pedidos por colaboradores mas não têm estoque agora. Diferente do "Alerta de Reposição" (preventivo), aqui já existe gente esperando.</p>
+            <div class="table-scroll">
+            <table>
+              <thead><tr><th>Material</th><th>SKU</th><th>Qtd. Pendente</th><th>Pedidos Aguardando</th><th>Ação</th></tr></thead>
+              <tbody>${itensUrgentes.map(it=>`
+                <tr>
+                  <td style="font-weight:600; color:var(--danger);">${esc(it.nome)}</td>
+                  <td class="mono dim">${esc(it.sku)}</td>
+                  <td class="mono" style="font-weight:700; color:var(--danger);">${it.quantidade}</td>
+                  <td class="mono dim">${it.pedidos}</td>
+                  <td>${it.produtoId ? `<button class="icon-btn" data-repor="${it.produtoId}">Repor / Editar</button>` : ''}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+            </div>
+          </div>
+        ` : ''}
+
+        <div class="dashboard-2col">
+          <div class="panel">
+            <div class="panel-head"><h3>Últimas Solicitações Pendentes</h3></div>
+            ${pendentes.length===0 ? `<div class="empty-state"><div class="glyph">🎉</div>Zero pendências na fila de aprovação.</div>` : `
+              <div class="table-scroll">
               <table>
-                <thead>
+                <thead><tr><th>Colaborador</th><th>Material</th><th>Qtd.</th><th>Urgência</th><th>Data</th></tr></thead>
+                <tbody>${pendentes.slice(0,5).map(s=>`
                   <tr>
-                    <th>Materiais</th>
-                    <th>Qtd.</th>
-                    <th>Setor / CC</th>
-                    <th>Prioridade</th>
-                    <th>Status</th>
-                    <th>Data da Solicitação</th>
-                    <th>Ações</th>
+                    <td style="font-weight:500;">${esc(s.nome)}</td>
+                    <td>${formatarMateriaisCompacto(s)}</td>
+                    <td class="mono">${s.quantidade}</td>
+                    <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
+                    <td class="dim mono">${fmtDate(s.dataCriacao)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  ${list.map(s => `
-                    <tr>
-                      <td style="font-weight:600;">${destacarSemEstoque(esc(s.item))}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
-                      <td class="mono" style="font-weight:700;">${s.quantidade}</td>
-                      <td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td>
-                      <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
-                      <td><span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span></td>
-                      <td class="dim mono" style="font-size:11px;">${fmtDate(s.dataCriacao)}</td>
-                      <td>
-                        ${s.status === 'pendente' ? `<button class="danger-btn cancel-req-btn" data-id="${s.id}">Cancelar</button>` : `<span class="dim" style="font-size:11.5px;">—</span>`}
-                      </td>
-                    </tr>
-                  `).join('')}
-                </tbody>
+                `).join('')}</tbody>
               </table>
+              </div>
+            `}
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h3>Capital por Categoria</h3></div>
+            <div class="chart-bar-container">
+              ${Object.keys(categorias).length === 0 ? `<div class="dim">Sem dados.</div>` : 
+                Object.entries(categorias).map(([cat, val]) => {
+                  const pct = valorTotal > 0 ? Math.round((val / valorTotal) * 100) : 0;
+                  return `
+                    <div class="chart-row">
+                      <span class="chart-label" title="${cat}">${cat}</span>
+                      <div class="chart-track"><div class="chart-fill" style="width:${pct}%;"></div></div>
+                      <span class="chart-val">${pct}%</span>
+                    </div>
+                  `;
+                }).join('')
+              }
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Ruptura de Estoque (Abaixo do Mínimo)</h3>
+            <div style="display:flex; gap:8px;">
+              ${abaixoMinimo.length > 0 ? `<button class="secondary" id="btn-exportar-compras">📥 Exportar Lista de Compras</button>` : ''}
+              ${abaixoMinimo.length > 0 ? `<button class="secondary" id="btn-ver-alerta-detalhado">Ver Lista de Reposição</button>` : ''}
+            </div>
+          </div>
+          ${abaixoMinimo.length===0 ? `<div class="empty-state"><div class="glyph">🛡️</div>Estoque saudável. Todos os itens possuem estoque acima do mínimo.</div>` : `
+            <div class="table-scroll">
+            <table>
+              <thead><tr><th>Material</th><th>SKU</th><th>Estoque Atual</th><th>Estoque Mínimo</th><th>Ação</th></tr></thead>
+              <tbody>${abaixoMinimo.map(p=>`
+                <tr>
+                  <td style="font-weight:500;">${esc(p.nome)}</td>
+                  <td class="mono dim">${esc(p.sku)}</td>
+                  <td class="mono" style="color:var(--danger); font-weight:600;">${p.estoque} ${p.unidade}</td>
+                  <td class="mono dim">${p.quantidadeMinima} ${p.unidade}</td>
+                  <td><button class="icon-btn" data-repor="${p.id}">Repor / Editar</button></td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
             </div>
           `}
         </div>
       </div>
     `);
+
+    dashboardEl.querySelectorAll('.stat-card').forEach(card => {
+      card.onclick = () => {
+        const type = card.dataset.card;
+        if(type === 'reposicao'){ state.modal = { type: 'alerta-reposicao' }; render(); }
+        else if(type === 'urgente'){ state.tab = 'solicitacoes'; render(); }
+        else if(type === 'pendentes'){ state.tab = 'solicitacoes'; state.filtroStatus = 'pendente'; render(); }
+        else if(type === 'total'){ state.tab = 'produtos'; render(); }
+        else if(type === 'capital'){ state.modal = { type: 'resumo-capital' }; render(); }
+      };
+    });
+
+    const btnDetalhes = dashboardEl.querySelector('#btn-ver-alerta-detalhado');
+    if(btnDetalhes) btnDetalhes.onclick = () => { state.modal = { type: 'alerta-reposicao' }; render(); };
+
+    const btnExportarCompras = dashboardEl.querySelector('#btn-exportar-compras');
+    if(btnExportarCompras) btnExportarCompras.onclick = exportarListaCompras;
+
+    const btnExportarUrgente = dashboardEl.querySelector('#btn-exportar-urgente');
+    if(btnExportarUrgente) btnExportarUrgente.onclick = () => exportarComprasUrgentes(itensUrgentes);
+
+    dashboardEl.querySelectorAll('[data-repor]').forEach(b => {
+      b.onclick = () => {
+        const p = state.produtos.find(x => x.id === b.dataset.repor);
+        state.modal = { type: 'produto-form', produto: p };
+        render();
+      };
+    });
+
+    content.appendChild(dashboardEl);
   }
 
-  // Converte uma string HTML em um elemento DOM pronto para ser inserido na página.
-  function elFrag(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstElementChild; }
+  function renderProdutos(content){
+    const cats = ['todas', ...new Set(state.produtos.map(p => p.categoria))];
 
-  // Escapa texto antes de inserir no HTML. Todo campo digitado pelo usuário
-  // (nome, motivo, endereço, item personalizado...) DEVE passar por aqui antes
-  // de entrar em um template de innerHTML — caso contrário, alguém poderia
-  // digitar <script> ou <img onerror=...> e executar código na tela de quem for
-  // ler esse conteúdo depois (XSS armazenado).
-  function esc(v){
-    if(v === null || v === undefined) return '';
-    return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-
-  // Destaca em vermelho o marcador "[SEM ESTOQUE]" que o banco já embute no texto
-  // do item quando algum produto do pedido está sem disponibilidade no momento.
-  function destacarSemEstoque(textoEscapado){
-    return textoEscapado.replace(/\[SEM ESTOQUE\]/g, '<strong style="color:var(--danger);">[SEM ESTOQUE — compra urgente]</strong>');
-  }
-
-  // Atualiza somente a grade de produtos, preservando o restante da tela.
-  function renderGridOnly(){
-    const grid = document.getElementById('product-grid');
-    if(!grid) return;
-    const filtered = state.produtos.filter(p => !state.busca || p.nome.toLowerCase().includes(state.busca.toLowerCase()) || (p.sku || '').toLowerCase().includes(state.busca.toLowerCase()));
-
-    if(filtered.length === 0){ grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;">Nenhum material encontrado.</div>`; return; }
-
-    // Converte os produtos filtrados em cartões HTML individuais.
-    grid.innerHTML = filtered.map(p => {
-      const estVal = Number(p.estoque || 0);
-      const semEstoque = estVal <= 0;
-      const isSelected = Object.prototype.hasOwnProperty.call(state.form.itens, p.id);
-      const qtd = isSelected ? state.form.itens[p.id] : 1;
-      return `
-        <div class="product-card ${isSelected ? 'selected' : ''}" data-id="${p.id}">
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-            <div class="cat">${esc(p.categoria)}</div>
-            ${semEstoque ? `<span style="font-size:10px; font-weight:700; color:#fff; background:var(--danger); padding:2px 7px; border-radius:10px; letter-spacing:.03em;">SEM ESTOQUE</span>` : ''}
+    const panel = elFrag(`
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Catálogo de Produtos</h3>
+          <div style="display:flex; gap:8px;">
+            <button class="secondary" id="export-produtos">📥 Exportar CSV</button>
+            <button class="primary" id="add-produto">+ Novo Produto</button>
           </div>
-          <h4>${esc(p.nome)}</h4>
-          <div class="dim mono" style="font-size:11px; margin-top:4px;">SKU: ${p.sku ? esc(p.sku) : '—'} | Estoque: <strong style="color:${estVal > 5 ? 'var(--text)' : 'var(--danger)'};">${estVal}</strong></div>
-          ${isSelected ? `
-            <div class="field" style="margin-top:10px;" onclick="event.stopPropagation();">
-              <label style="margin-bottom:4px;">Quantidade deste item</label>
-              <input type="number" min="1" max="999" value="${qtd}" class="qtd-item-input" data-id="${p.id}">
-              ${semEstoque ? `<div style="font-size:11px; color:var(--danger); margin-top:4px;">⚠️ Sem estoque agora — será comprado com urgência para atender seu pedido.</div>` : ''}
-            </div>
-          ` : ''}
+        </div>
+        <div class="row-controls">
+          <input id="busca-produto" placeholder="🔍 Buscar por nome ou SKU..." style="max-width:300px;" value="${state.buscaProduto}">
+          <select id="filtro-cat" style="max-width:200px;">
+            ${cats.map(c => `<option value="${c}" ${state.filtroCategoria===c?'selected':''}>${c==='todas'?'Todas as Categorias':c}</option>`).join('')}
+          </select>
+        </div>
+        <div id="produtos-table"></div>
+      </div>
+    `);
+    content.appendChild(panel);
+
+    panel.querySelector('#add-produto').onclick = ()=>{ state.modal={type:'produto-form'}; render(); };
+
+    panel.querySelector('#export-produtos').onclick = () => {
+      exportarCSV(state.produtos.map(p => ({ SKU: p.sku, Nome: p.nome, Categoria: p.categoria, Estoque: p.estoque, Unidade: p.unidade, PrecoUnitario: p.preco, Fornecedor: p.fornecedor })), 'Inventario_Estoque');
+    };
+
+    panel.querySelector('#busca-produto').oninput = (e)=>{ state.buscaProduto=e.target.value; renderTable(); };
+    panel.querySelector('#filtro-cat').onchange = (e)=>{ state.filtroCategoria=e.target.value; renderTable(); };
+
+    function renderTable(){
+      const box = panel.querySelector('#produtos-table');
+      const list = state.produtos.filter(p=> {
+        const matchBusca = !state.buscaProduto || p.nome.toLowerCase().includes(state.buscaProduto.toLowerCase()) || p.sku.toLowerCase().includes(state.buscaProduto.toLowerCase());
+        const matchCat = state.filtroCategoria === 'todas' || p.categoria === state.filtroCategoria;
+        return matchBusca && matchCat;
+      });
+
+      if(list.length===0){ box.innerHTML = `<div class="empty-state"><div class="glyph">📦</div>Nenhum produto encontrado com esse filtro.</div>`; return; }
+      box.innerHTML = `
+        <div class="table-scroll">
+        <table>
+          <thead><tr><th>Material</th><th>SKU</th><th>Categoria</th><th>Estoque Atual</th><th>Mín. Exigido</th><th>Custo Unit.</th><th>Fornecedor</th><th>Ações</th></tr></thead>
+          <tbody>${list.map(p=>`
+            <tr>
+              <td style="font-weight:500;">${esc(p.nome)}</td>
+              <td class="mono dim">${esc(p.sku)}</td>
+              <td class="dim">${esc(p.categoria)}</td>
+              <td class="mono" style="${p.estoque <= p.quantidadeMinima ?'color:var(--danger); font-weight:bold;':''}">${p.estoque} <small class="dim">${p.unidade}</small></td>
+              <td class="mono dim">${p.quantidadeMinima} ${p.unidade}</td>
+              <td class="mono">${fmtMoney(p.preco)}</td>
+              <td class="dim">${esc(p.fornecedor)||'—'}</td>
+              <td style="white-space:nowrap;">
+                <button class="icon-btn" data-act="editar" data-id="${p.id}">Editar</button>
+                <button class="icon-btn danger" data-act="excluir" data-id="${p.id}">Excluir</button>
+              </td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
         </div>
       `;
-    }).join('');
-
-    // Percorre os cartões para configurar a seleção de produtos.
-    grid.querySelectorAll('.product-card').forEach(card => {
-      // Alterna a seleção do produto clicado (clique fora do campo de quantidade).
-      card.onclick = () => {
-        const id = card.dataset.id;
-        state.form.usarLivre = false;
-        if(Object.prototype.hasOwnProperty.call(state.form.itens, id)){
-          delete state.form.itens[id];
-        } else {
-          state.form.itens[id] = 1;
-        }
-        renderGridOnly();
-      };
-    });
-
-    // Permite ajustar a quantidade de cada item selecionado individualmente.
-    grid.querySelectorAll('.qtd-item-input').forEach(input => {
-      input.onclick = (e) => e.stopPropagation();
-      input.oninput = (e) => {
-        const id = input.dataset.id;
-        const val = parseInt(e.target.value) || 1;
-        state.form.itens[id] = val < 1 ? 1 : val;
-      };
-    });
+      box.querySelectorAll('[data-act]').forEach(btn=>{
+        btn.onclick = ()=>{
+          const p = state.produtos.find(x=>x.id===btn.dataset.id);
+          state.modal = btn.dataset.act==='editar' ? {type:'produto-form', produto:p} : {type:'confirmar-exclusao', produto:p};
+          render();
+        };
+      });
+    }
+    renderTable();
   }
 
-  // Atualiza somente a tabela de histórico e os indicadores KPI.
-  function renderHistoryOnly(){
-    const wrapper = document.getElementById('history-table-wrapper');
-    if(!wrapper) return;
-    const list = state.solicitacoes;
+  function renderSolicitacoes(content){
+    const ABAS_STATUS = [
+      { valor: 'pendente',  label: 'Pendentes' },
+      { valor: 'aprovado',  label: 'Aprovados' },
+      { valor: 'entregue',  label: 'Entregues' },
+      { valor: 'rejeitado', label: 'Reprovados' },
+      { valor: 'cancelado', label: 'Cancelados' },
+    ];
+    // Aba padrão: pendentes (o que o admin mais precisa ver primeiro).
+    if(!ABAS_STATUS.some(a => a.valor === state.filtroStatus)){
+      state.filtroStatus = 'pendente';
+    }
 
-    wrapper.innerHTML = list.length === 0 ? `<div class="empty-state">Você ainda não possui solicitações registradas nesta conta.</div>` : `
-      <div style="overflow-x:auto;">
-        <table>
-          <thead>
-            <tr>
-              <th>Materiais</th>
-              <th>Qtd.</th>
-              <th>Setor / CC</th>
-              <th>Prioridade</th>
-              <th>Status</th>
-              <th>Data da Solicitação</th>
-              <th>Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${list.map(s => `
-              <tr>
-                <td style="font-weight:600;">${destacarSemEstoque(esc(s.item))}${s.endereco ? `<br><small class="dim" style="font-weight:400;">📍 ${esc(s.endereco)}</small>` : ''}</td>
-                <td class="mono" style="font-weight:700;">${s.quantidade}</td>
-                <td class="dim">${s.setor ? esc(s.setor) : '—'}<br><small class="mono">${esc(s.centroCusto)}</small></td>
-                <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
-                <td><span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span></td>
-                <td class="dim mono" style="font-size:11px;">${fmtDate(s.dataCriacao)}</td>
-                <td>
-                  ${s.status === 'pendente' ? `<button class="danger-btn cancel-req-btn" data-id="${s.id}">Cancelar</button>` : `<span class="dim" style="font-size:11.5px;">—</span>`}
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+    const contagens = Object.fromEntries(ABAS_STATUS.map(a => [a.valor, state.solicitacoes.filter(s => s.status === a.valor).length]));
+
+    const panel = elFrag(`
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Fila de Pedidos e Requisições</h3>
+          <button class="secondary" id="export-solicitacoes">📥 Exportar Relatório CSV</button>
+        </div>
+
+        <div class="status-tabs" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; border-bottom:1px solid var(--border); padding-bottom:16px;">
+          ${ABAS_STATUS.map(a => `
+            <button class="status-tab-btn ${state.filtroStatus===a.valor?'active':''}" data-status="${a.valor}"
+              style="padding:8px 16px; border-radius:8px; border:1px solid ${state.filtroStatus===a.valor?'var(--amber)':'var(--border)'}; background:${state.filtroStatus===a.valor?'rgba(255,127,17,0.1)':'transparent'}; color:${state.filtroStatus===a.valor?'var(--amber)':'var(--text)'}; font-size:13px; font-weight:600; cursor:pointer;">
+              ${a.label} <span style="opacity:0.7;">(${contagens[a.valor]})</span>
+            </button>
+          `).join('')}
+        </div>
+
+        <div class="row-controls">
+          <input id="busca-sol" placeholder="🔍 Pesquisar por colaborador, email ou item..." style="max-width:300px;" value="${esc(state.buscaSolicitacao)}">
+          <select id="ordenacao" style="max-width:180px;">
+            <option value="recentes" ${state.ordenacao==='recentes'?'selected':''}>Mais Recentes</option>
+            <option value="urgencia" ${state.ordenacao==='urgencia'?'selected':''}>Maior Urgência</option>
+          </select>
+        </div>
+        <div id="sol-table"></div>
       </div>
-    `;
+    `);
+    content.appendChild(panel);
 
-    // Localiza os botões de cancelamento para configurar seus eventos.
-    wrapper.querySelectorAll('.cancel-req-btn').forEach(btn => {
-      // Confirma o cancelamento e chama a rotina que devolve o estoque.
-      btn.onclick = () => {
-        const id = btn.dataset.id;
-        if(confirm('Deseja realmente cancelar esta solicitação? O estoque será estornado.')) {
-          cancelarSolicitacao(id);
-        }
-      };
+    panel.querySelector('#export-solicitacoes').onclick = () => {
+      exportarCSV(state.solicitacoes.map(s => ({ Solicitante: s.nome, Email: s.email, Setor: s.setor, Material: s.item, Quantidade: s.quantidade, Endereco: s.endereco, Urgencia: s.urgencia, Status: s.status, Data: s.dataCriacao })), 'Relatorio_Solicitacoes');
+    };
+
+    panel.querySelectorAll('.status-tab-btn').forEach(btn => {
+      btn.onclick = () => { state.filtroStatus = btn.dataset.status; render(); };
     });
 
-    const pendentes = state.solicitacoes.filter(s => s.status === 'pendente').length;
-    const aprovados = state.solicitacoes.filter(s => s.status === 'aprovado' || s.status === 'entregue').length;
-    const rejeitados = state.solicitacoes.filter(s => s.status === 'rejeitado' || s.status === 'cancelado').length;
+    panel.querySelector('#busca-sol').oninput = (e)=>{ state.buscaSolicitacao=e.target.value; renderTable(); };
+    panel.querySelector('#ordenacao').onchange = (e)=>{ state.ordenacao=e.target.value; renderTable(); };
 
-    const kTotal = document.getElementById('kpi-total');
-    const kPend = document.getElementById('kpi-pend');
-    const kAprov = document.getElementById('kpi-aprov');
-    const kRejej = document.getElementById('kpi-rejej');
-    if(kTotal) kTotal.textContent = state.solicitacoes.length;
-    if(kPend) kPend.textContent = pendentes;
-    if(kAprov) kAprov.textContent = aprovados;
-    if(kRejej) kRejej.textContent = rejeitados;
+    // Define quais ações fazem sentido a partir de cada status atual.
+    function acoesDisponiveis(status){
+      if(status==='pendente')  return [{to:'aprovado', label:'Aprovar', cor:'var(--ok)'}, {to:'rejeitado', label:'Rejeitar', cor:'var(--danger)'}];
+      if(status==='aprovado')  return [{to:'entregue', label:'Marcar Entregue', cor:'var(--steel)'}, {to:'rejeitado', label:'Rejeitar', cor:'var(--danger)'}];
+      if(status==='rejeitado') return [{to:'pendente', label:'Reabrir Pedido', cor:'var(--amber)'}];
+      if(status==='entregue')  return [];
+      if(status==='cancelado') return [];
+      return [];
+    }
+
+    function renderTable(){
+      const box = panel.querySelector('#sol-table');
+      const urgOrder = {alta:0, normal:1, baixa:2};
+      let list = state.solicitacoes.filter(s=>{
+        const q = state.buscaSolicitacao.toLowerCase();
+        const matchBusca = !q || s.nome.toLowerCase().includes(q) || s.email.toLowerCase().includes(q) || s.item.toLowerCase().includes(q) || (s.setor||'').toLowerCase().includes(q);
+        return matchBusca && s.status === state.filtroStatus;
+      });
+      list = [...list].sort((a,b)=> state.ordenacao==='urgencia' ? urgOrder[a.urgencia]-urgOrder[b.urgencia] : new Date(b.dataCriacao)-new Date(a.dataCriacao));
+
+      if(list.length===0){ box.innerHTML = `<div class="empty-state"><div class="glyph">📝</div>Nenhuma solicitação nesse status.</div>`; return; }
+      box.innerHTML = `
+        <div class="table-scroll">
+        <table>
+          <thead><tr><th>Colaborador</th><th>Material / Descrição</th><th>Qtd</th><th>Urgência</th><th>Data</th><th>Ações / Gestão</th></tr></thead>
+          <tbody>${list.map(s=>`
+            <tr>
+              <td><strong>${esc(s.nome)}</strong><br><span class="email-cell">${esc(s.email)}</span></td>
+              <td>${formatarMateriaisCompacto(s)}</td>
+              <td class="mono" style="font-weight:bold;">${s.quantidade}</td>
+              <td><span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span></td>
+              <td class="dim mono" style="font-size:11px;">${fmtDate(s.dataCriacao)}</td>
+              <td>
+                <button class="icon-btn" data-act="detalhes" data-id="${s.id}">Ver</button>
+                ${acoesDisponiveis(s.status).map(a => `<button class="icon-btn" style="color:${a.cor}; border-color:${a.cor};" data-act="${a.to}" data-id="${s.id}">${a.label}</button>`).join('')}
+              </td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
+        </div>
+      `;
+      box.querySelectorAll('[data-act]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          const id = btn.dataset.id;
+          const act = btn.dataset.act;
+          if(act==='detalhes'){
+            const s = state.solicitacoes.find(x=>x.id===id);
+            state.modal = {type:'detalhe-solicitacao', solicitacao:s};
+            render();
+          } else {
+            await atualizarStatus(id, act);
+            render();
+          }
+        };
+      });
+    }
+    renderTable();
   }
 
-  // Liga todos os eventos dos campos, filtros, botões e formulário da página.
-  function wireEvents(content){
-    // Cria uma função auxiliar para salvar imediatamente os campos do perfil.
-    const bindProfileLive = (id, key) => {
-      const node = content.querySelector('#'+id);
-      if(!node) return;
-      // Atualiza o campo correspondente do perfil conforme o usuário digita.
-      node.oninput = (e) => {
-        state.userProfile[key] = e.target.value;
-        saveUserData();
-      };
-    };
+  function renderLogs(content){
+    const panel = elFrag(`
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Histórico de Auditoria e Logs do Sistema</h3>
+          <button class="secondary" id="export-logs">📥 Exportar Logs CSV</button>
+        </div>
+        ${state.logs.length===0 ? `<div class="empty-state"><div class="glyph">📜</div>Nenhum registro de log encontrado.</div>` : `
+          <div class="table-scroll">
+          <table>
+            <thead><tr><th>Data / Hora</th><th>Administrador</th><th>Ação Realizada</th><th>Detalhes</th></tr></thead>
+            <tbody>${state.logs.map(l=>`
+              <tr>
+                <td class="mono dim" style="font-size:11.5px; white-space:nowrap;">${fmtDate(l.data)}</td>
+                <td><span class="badge" style="color:var(--steel); border-color:var(--border);">${esc(l.usuario)}</span></td>
+                <td style="font-weight:600; font-family:var(--font-mono); font-size:12px;">${esc(l.acao)}</td>
+                <td class="dim">${esc(l.detalhe)}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+          </div>
+        `}
+      </div>
+    `);
+    panel.querySelector('#export-logs').onclick = () => exportarCSV(state.logs, 'Logs_Auditoria');
+    content.appendChild(panel);
+  }
 
-    bindProfileLive('p-nome', 'nome');
-    bindProfileLive('p-matricula', 'matricula');
-    bindProfileLive('p-setor', 'setor');
-    bindProfileLive('p-centro', 'centroCusto');
-
-    // Cria uma função auxiliar para atualizar os campos do formulário em tempo real.
-    const bindFormLive = (id, key, parser) => {
-      const node = content.querySelector('#'+id);
-      if(!node) return;
-      // Atualiza o campo do formulário, aplicando o parser quando necessário.
-      node.oninput = (e) => {
-        state.form[key] = parser ? parser(e.target.value) : e.target.value;
-      };
-    };
-
-    bindFormLive('f-motivo', 'motivo');
-    bindFormLive('f-item-livre', 'itemLivre');
-    bindFormLive('f-qtd-livre', 'quantidadeLivre', v => parseInt(v)||1);
-
-    // Cria uma função auxiliar para os campos aninhados em state.form.endereco.
-    const bindEnderecoLive = (id, key, parser) => {
-      const node = content.querySelector('#'+id);
-      if(!node) return;
-      node.oninput = (e) => {
-        state.form.endereco[key] = parser ? parser(e.target.value) : e.target.value;
-      };
-    };
-
-    bindEnderecoLive('f-logradouro', 'logradouro');
-    bindEnderecoLive('f-numero', 'numero');
-    bindEnderecoLive('f-complemento', 'complemento');
-    bindEnderecoLive('f-bairro', 'bairro');
-    bindEnderecoLive('f-cidade', 'cidade');
-    bindEnderecoLive('f-uf', 'uf', v => v.toUpperCase().slice(0,2));
-
-    const cepInput = content.querySelector('#f-cep');
-    if(cepInput){
-      // Formata visualmente o CEP e dispara a busca automática ao completar 8 dígitos.
-      cepInput.oninput = (e) => {
-        const digits = e.target.value.replace(/\D/g,'').slice(0,8);
-        e.target.value = digits.length > 5 ? digits.replace(/(\d{5})(\d{0,3})/, '$1-$2') : digits;
-        state.form.endereco.cep = digits;
-        if(digits.length === 8){ buscarCep(digits); }
-      };
-    }
-
-    const urgSel = content.querySelector('#f-urgencia');
-    // Atualiza a prioridade sempre que o valor do select for alterado.
-    if(urgSel) urgSel.onchange = (e) => { state.form.urgencia = e.target.value; };
-
-    const busca = content.querySelector('#busca-item');
-    if(busca) {
-      // Filtra a grade de produtos enquanto o usuário digita na busca.
-      busca.oninput = (e) => {
-        const cursorPosition = e.target.selectionStart;
-        state.busca = e.target.value;
-        renderGridOnly();
-        const novoBusca = content.querySelector('#busca-item');
-        if(novoBusca){
-          novoBusca.focus();
-          novoBusca.setSelectionRange(cursorPosition, cursorPosition);
-        }
-      };
-    }
-
-    const toggle = content.querySelector('#toggle-outro');
-    // Alterna entre catálogo padrão e item personalizado (recarrega o formulário inteiro).
-    if(toggle) toggle.onclick = () => {
-      state.form.usarLivre = !state.form.usarLivre;
+  function renderConfig(content){
+    const panel = elFrag(`
+      <div class="panel" style="max-width:600px;">
+        <div class="panel-head"><h3>Configurações Globais</h3></div>
+        <div class="field">
+          <label>E-mail Responsável pelo Recebimento de Solicitações</label>
+          <input id="cfg-email" value="${esc(state.emailControle)}" placeholder="yuri.silva1@sgs.com">
+        </div>
+        <button class="primary" id="btn-salvar-cfg" style="margin-top:12px;">Salvar Alterações</button>
+      </div>
+    `);
+    panel.querySelector('#btn-salvar-cfg').onclick = async () => {
+      const val = panel.querySelector('#cfg-email').value.trim();
+      if(!val){ showToast('Informe um e-mail válido.'); return; }
+      const { error } = await supabaseClient.from('config').upsert({ chave: 'email_controle', valor: val });
+      if(error){ showToast('Erro ao salvar: ' + error.message); return; }
+      state.emailControle = val;
+      await addLog('CONFIG', `E-mail de controle alterado para ${val}`);
+      showToast('Configurações salvas com sucesso!');
       render();
     };
+    content.appendChild(panel);
+  }
 
-    const logoutBtn = content.querySelector('#btn-logout');
-    if(logoutBtn) logoutBtn.onclick = logoutUser;
+  function renderModal(){
+    const m = state.modal;
+    let inner = '';
 
-    const exportBtn = content.querySelector('#btn-export');
-    if(exportBtn) exportBtn.onclick = exportarCSV;
+    if(m.type==='produto-form'){
+      const p = m.produto || {};
+      inner = `
+        <h3>${p.id ? 'Editar Produto / Estoque' : 'Cadastrar Novo Produto'}</h3>
+        <p class="modal-sub">Preencha as informações técnicas e os níveis do item.</p>
+        <div class="field"><label>Nome do Material / Descrição *</label><input id="m-nome" value="${esc(p.nome)}"></div>
+        <div class="field-row">
+          <div class="field"><label>SKU / Código *</label><input id="m-sku" value="${esc(p.sku)}"></div>
+          <div class="field"><label>Categoria *</label><input id="m-cat" value="${p.categoria ? esc(p.categoria) : 'EPIs'}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Quantidade / Estoque Atual *</label><input id="m-qtd" type="number" min="0" value="${p.estoque !== undefined ? p.estoque : 25}"></div>
+          <div class="field"><label>Estoque Mínimo (Alerta) *</label><input id="m-min" type="number" min="0" value="${p.quantidadeMinima || 5}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Preço Unitário (R$)</label><input id="m-preco" type="number" step="0.01" min="0" value="${p.preco || 35.0}"></div>
+          <div class="field"><label>Fornecedor</label><input id="m-forn" value="${p.fornecedor ? esc(p.fornecedor) : 'Suprimentos Corporativos'}"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary" id="modal-cancel">Cancelar</button>
+          <button class="primary" id="modal-save">Salvar Produto</button>
+        </div>
+      `;
+    } else if(m.type==='confirmar-exclusao'){
+      const p = m.produto;
+      inner = `
+        <h3>Excluir Produto</h3>
+        <p class="modal-sub">Tem certeza que deseja remover permanentemente o item <strong>${esc(p.nome)}</strong> (${esc(p.sku)}) do catálogo?</p>
+        <div class="modal-actions">
+          <button class="secondary" id="modal-cancel">Cancelar</button>
+          <button class="primary" style="background:var(--danger); color:#fff;" id="modal-confirm-del">Sim, Excluir</button>
+        </div>
+      `;
+    } else if(m.type==='alerta-reposicao'){
+      const abaixo = state.produtos.filter(p => p.estoque <= p.quantidadeMinima);
+      inner = `
+        <h3>Itens com Necessidade de Reposição</h3>
+        <p class="modal-sub">Relação de SKUs com estoque igual ou inferior ao mínimo configurado.</p>
+        ${abaixo.length === 0 ? `<div class="empty-state">Nenhum item em falta.</div>` : `
+          <div class="table-scroll">
+          <table>
+            <thead><tr><th>Material</th><th>SKU</th><th>Estoque</th><th>Mínimo</th></tr></thead>
+            <tbody>${abaixo.map(p=>`
+              <tr>
+                <td>${esc(p.nome)}</td>
+                <td class="mono dim">${esc(p.sku)}</td>
+                <td class="mono" style="color:var(--danger); font-weight:bold;">${p.estoque}</td>
+                <td class="mono dim">${p.quantidadeMinima}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+          </div>
+        `}
+        <div class="modal-actions">
+          ${abaixo.length > 0 ? `<button class="secondary" id="modal-exportar-compras">📥 Exportar Lista de Compras</button>` : ''}
+          <button class="primary" id="modal-cancel">Fechar</button>
+        </div>
+      `;
+    } else if(m.type==='resumo-capital'){
+      const valorTotal = state.produtos.reduce((a,p)=>a + p.estoque * p.preco,0);
+      inner = `
+        <h3>Resumo de Capital Imobilizado</h3>
+        <p class="modal-sub">Valuation atual do almoxarifado baseado nos estoques do banco de dados.</p>
+        <div style="font-size:32px; font-family:var(--font-display); font-weight:bold; color:var(--steel); margin:20px 0;">${fmtMoney(valorTotal)}</div>
+        <p class="dim" style="font-size:13px;">Total de <strong>${state.produtos.length}</strong> SKUs monitorados em tempo real.</p>
+        <div class="modal-actions">
+          <button class="primary" id="modal-cancel">Fechar</button>
+        </div>
+      `;
+    } else if(m.type==='detalhe-solicitacao'){
+      const s = m.solicitacao;
+      const itens = s.itens || [];
+      const mailtoLink = buildMailto(s.email, `[SUPRIMENTOS] Atualização sobre sua solicitação (${s.item})`, `Olá ${s.nome},\n\nSua solicitação do item "${s.item}" (Quantidade: ${s.quantidade}) encontra-se com status: ${s.status.toUpperCase()}.\n\nAtenciosamente,\nAlmoxarifado BackOffice`);
 
-    // Configura novamente os botões de cancelamento presentes na tabela.
-    content.querySelectorAll('.cancel-req-btn').forEach(btn => {
-      // Confirma o cancelamento e executa a devolução do estoque.
-      btn.onclick = () => {
-        const id = btn.dataset.id;
-        if(confirm('Deseja realmente cancelar esta solicitação? O estoque será estornado.')) {
-          cancelarSolicitacao(id);
+      const secaoTitulo = (texto) => `<div style="font-family:var(--font-mono); font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); margin:20px 0 10px; padding-top:16px; border-top:1px solid var(--border);">${texto}</div>`;
+
+      inner = `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+          <h3 style="margin:0;">Detalhes da Requisição</h3>
+          <div style="display:flex; gap:8px;">
+            <span class="badge urg-${esc(s.urgencia)}">${esc(s.urgencia).toUpperCase()}</span>
+            <span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span>
+          </div>
+        </div>
+        <p class="modal-sub">Pedido de ${fmtDate(s.dataCriacao)}</p>
+
+        <div style="margin:0 0 4px; font-family:var(--font-mono); font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim);">Solicitante</div>
+        <dl class="detail-grid">
+          <dt>Nome</dt><dd>${esc(s.nome)}</dd>
+          <dt>E-mail</dt><dd><a href="${esc(mailtoLink)}" style="color:var(--steel); text-decoration:underline;">${esc(s.email)} ✉️</a></dd>
+          <dt>Matrícula</dt><dd>${esc(s.matricula) || '—'}</dd>
+          <dt>Setor / Centro</dt><dd>${esc(s.setor) || '—'} (${esc(s.centroCusto) || '—'})</dd>
+        </dl>
+
+        ${secaoTitulo('Materiais Solicitados')}
+        ${(itens.some(it => it.disponivel === false)) ? `
+          <div style="background:rgba(255,63,0,0.1); border:1px solid var(--danger); border-radius:8px; padding:10px 14px; margin-bottom:12px; font-size:13px; color:var(--danger); font-weight:600;">
+            ⚠️ Este pedido tem item(ns) sem estoque no momento — compra urgente necessária.
+          </div>
+        ` : ''}
+        ${itens.length > 0 ? `
+          <div class="table-scroll">
+          <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead>
+              <tr>
+                <th style="text-align:left; padding:6px 8px; color:var(--text-dim); font-family:var(--font-mono); font-size:11px; border-bottom:1px solid var(--border);">Material</th>
+                <th style="text-align:left; padding:6px 8px; color:var(--text-dim); font-family:var(--font-mono); font-size:11px; border-bottom:1px solid var(--border);">SKU</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-dim); font-family:var(--font-mono); font-size:11px; border-bottom:1px solid var(--border);">Qtd.</th>
+                <th style="text-align:center; padding:6px 8px; color:var(--text-dim); font-family:var(--font-mono); font-size:11px; border-bottom:1px solid var(--border);">Disponibilidade</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itens.map(it => {
+                const semEstoque = it.disponivel === false;
+                return `
+                <tr style="${semEstoque ? 'background:rgba(255,63,0,0.06);' : ''}">
+                  <td style="padding:8px; border-bottom:1px solid var(--border); ${semEstoque ? 'color:var(--danger); font-weight:600;' : ''}">${esc(it.nome)}${it.categoria ? `<br><span class="dim" style="font-size:11px;">${esc(it.categoria)}</span>` : ''}</td>
+                  <td style="padding:8px; border-bottom:1px solid var(--border);" class="mono dim">${esc(it.sku)}</td>
+                  <td style="padding:8px; border-bottom:1px solid var(--border); text-align:right; font-weight:700;" class="mono">${it.quantidade}</td>
+                  <td style="padding:8px; border-bottom:1px solid var(--border); text-align:center;">
+                    ${semEstoque
+                      ? `<span class="badge" style="color:var(--danger); border-color:var(--danger); background:rgba(255,63,0,0.1);">🔴 SEM ESTOQUE</span>`
+                      : `<span class="badge" style="color:var(--ok); border-color:var(--ok); background:rgba(16,185,129,0.1);">✅ Reservado</span>`}
+                  </td>
+                </tr>
+              `;}).join('')}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="2" style="padding:8px; text-align:right; color:var(--text-dim); font-family:var(--font-mono); font-size:11px;">TOTAL</td>
+                <td style="padding:8px; text-align:right; font-weight:700; color:var(--amber);" class="mono">${s.quantidade}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+          </div>
+        ` : `
+          <div style="background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:13px;">
+            <strong style="color:var(--amber);">${esc(s.item)}</strong>
+            <div class="dim" style="font-size:11.5px; margin-top:2px;">Item personalizado (fora do catálogo) · Quantidade: ${s.quantidade}</div>
+          </div>
+        `}
+
+        ${secaoTitulo('Endereço de Entrega')}
+        <div style="background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:13px; color:var(--text);">📍 ${esc(s.endereco) || 'Não informado.'}</div>
+
+        ${secaoTitulo('Observações')}
+        <div style="background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:13px; color:var(--text);">${esc(s.motivo) || 'Nenhuma observação informada.'}</div>
+
+        <div class="modal-actions">
+          <button class="primary" id="modal-cancel">Fechar</button>
+        </div>
+      `;
+    }
+
+    const overlay = elFrag(`<div class="overlay"><div class="modal">${inner}</div></div>`);
+    overlay.onclick = (e)=>{ if(e.target===overlay){ state.modal=null; render(); } };
+
+    const cancelBtn = overlay.querySelector('#modal-cancel');
+    if(cancelBtn) cancelBtn.onclick = ()=>{ state.modal=null; render(); };
+
+    const saveProdBtn = overlay.querySelector('#modal-save');
+    if(saveProdBtn){
+      saveProdBtn.onclick = async ()=>{
+        const nome = overlay.querySelector('#m-nome').value.trim();
+        const sku = overlay.querySelector('#m-sku').value.trim();
+        const categoria = overlay.querySelector('#m-cat').value.trim();
+        const qtd = parseInt(overlay.querySelector('#m-qtd').value)||0;
+        const min = parseInt(overlay.querySelector('#m-min').value)||5;
+        const preco = parseFloat(overlay.querySelector('#m-preco').value)||0;
+        const fornecedor = overlay.querySelector('#m-forn').value.trim();
+
+        if(!nome || !sku){ showToast('Preencha os campos obrigatórios (Nome e SKU).'); return; }
+
+        const payload = { nome, sku, categoria, quantidade: qtd, quantidadeMinima: min, preco, fornecedor };
+        if(m.produto && m.produto.id){
+          await updateProduto(m.produto.id, payload);
+        } else {
+          await addProduto(payload);
         }
+        state.modal = null;
+        render();
       };
-    });
+    }
 
-    renderGridOnly();
+    const delBtn = overlay.querySelector('#modal-confirm-del');
+    if(delBtn){
+      delBtn.onclick = async ()=>{
+        await deleteProduto(m.produto.id);
+        state.modal = null;
+        render();
+      };
+    }
 
-    const submitBtn = content.querySelector('#submit-btn');
-    if(submitBtn) submitBtn.onclick = submitForm;
+    const exportarComprasBtn = overlay.querySelector('#modal-exportar-compras');
+    if(exportarComprasBtn) exportarComprasBtn.onclick = exportarListaCompras;
+
+    app.appendChild(overlay);
   }
 
   loadAll();
 })();
+
+// Registro do Service Worker (PWA) — permite instalar o painel como app no
+// celular. Falha em silêncio se o navegador não suportar ou se o sw.js ainda
+// não existir no servidor.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
+}
