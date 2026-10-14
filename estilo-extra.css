@@ -82,14 +82,13 @@ button.primary:disabled{animation:fxBreath 1.2s ease-in-out infinite;}
   background:radial-gradient(180px circle at var(--gx,50%) var(--gy,50%), rgba(255,127,17,.16), transparent 70%);
 }
 .product-card:hover::before{opacity:1;}
-.product-card.selected{animation:fxPop .4s cubic-bezier(.34,1.56,.64,1);}
+
 .product-card.selected::after{
   content:'✓'; position:absolute; top:10px; right:10px; width:22px; height:22px; border-radius:50%;
-  background:var(--amber); color:#1A1300; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center;
-  animation:fxPop .4s cubic-bezier(.34,1.56,.64,1);
+  background:var(--amber); color:#1A1300; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px rgba(255,127,17,.5);
 }
 @keyframes fxPop{0%{transform:scale(.9);} 60%{transform:scale(1.04);} 100%{transform:scale(1);}}
-.product-card .field{animation:fxRise .3s ease-out both;}
+.product-card.fx-just .field{animation:fxRise .3s ease-out both;}
 
 /* ---------- Tabela / histórico ---------- */
 tbody tr{transition:background .2s, transform .2s;}
@@ -170,3 +169,17 @@ button:focus-visible, .product-card:focus-visible{outline:2px solid var(--amber)
 .user-session-bar:hover{transform:translateY(-2px); box-shadow:0 10px 24px rgba(26,163,240,.15);}
 .badge.pendente::before{animation:fxBadge 1.4s ease-in-out infinite;}
 .toast{border-left-color:var(--amber);}
+
+/* ---------- Cards dos itens (v3) ---------- */
+@keyframes fxCardIn{from{opacity:0; transform:translateY(26px) scale(.94);} to{opacity:1; transform:none;}}
+.product-card.fx-enter{animation:fxCardIn .55s cubic-bezier(.16,1,.3,1) backwards; animation-delay:calc(var(--e,0) * 35ms);}
+.product-card.fx-just{animation:fxPop .45s cubic-bezier(.34,1.56,.64,1);}
+.product-card.fx-just::after{animation:fxPop .5s cubic-bezier(.34,1.56,.64,1);}
+.product-card .fx-ripple{background:rgba(255,127,17,.28);}
+.product-card.selected::after{top:12px; right:12px; width:26px; height:26px; font-size:14px;}
+.fx-spark{position:absolute; top:24px; right:24px; width:6px; height:6px; border-radius:50%; background:var(--amber); pointer-events:none; animation:fxSpark .65s ease-out forwards;}
+@keyframes fxSpark{from{transform:rotate(var(--a)) translateX(0); opacity:1;} to{transform:rotate(var(--a)) translateX(40px) scale(.3); opacity:0;}}
+.fx-stockflash{animation:fxStockFlash 1.2s ease-out;}
+@keyframes fxStockFlash{0%,50%{box-shadow:0 0 0 3px var(--steel);} 100%{box-shadow:0 0 0 0 transparent;}}
+.fx-tick{animation:fxBump .3s cubic-bezier(.34,1.56,.64,1);}
+.product-card[data-level="out"] .fx-stock-n{animation:fxBreath 1.6s ease-in-out infinite;}
